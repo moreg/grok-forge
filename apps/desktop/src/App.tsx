@@ -3375,6 +3375,9 @@ function Overlay({
   const [importError, setImportError] = useState('')
   const [statsRange, setStatsRange] = useState<StatsTimeRange>('all')
   const [searchCopyStatus, setSearchCopyStatus] = useState('')
+  const [settingsTab, setSettingsTab] = useState<
+    'overview' | 'general' | 'model' | 'shortcuts' | 'mcp' | 'profile' | 'data'
+  >('overview')
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -3388,6 +3391,7 @@ function Overlay({
     if (panel !== 'settings') {
       setImportMessage('')
       setImportError('')
+      setSettingsTab('overview')
     }
   }, [panel])
 
@@ -3457,373 +3461,471 @@ function Overlay({
 
   return (
     <div className="overlay-backdrop" role="presentation" onClick={onClose}>
-      <section className="overlay-panel wide" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+      <section
+        className={`overlay-panel ${panel === 'settings' ? 'settings-panel' : 'wide'}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+      >
         <header>
           <strong>{title}</strong>
           <button type="button" className="icon-button" aria-label="关闭面板" onClick={onClose}><X size={16} /></button>
         </header>
         {panel === 'settings' && (
-          <div className="overlay-body">
-            <div className="setting-row"><span>运行模式</span><em>{backend?.mode === 'native' ? '原生桌面' : '浏览器预览'}</em></div>
-            <div className="setting-row"><span>Grok 版本</span><em>{backend?.version || '未知'}</em></div>
-            <div className="setting-row"><span>连接状态</span><em>{connected ? '已连接' : '未连接'}</em></div>
-            <div className="setting-row"><span>工作区</span><em>{workspacePath || '未选择'}</em></div>
-            <div className="setting-row"><span>分支</span><em>{workspace?.branch || '未知'}</em></div>
-            <div className="setting-row"><span>本地任务</span><em>{taskCount} 个</em></div>
-            <div className="stats-card" aria-label="任务统计">
-              <div className="stats-card-head">
-                <strong>任务统计</strong>
+          <div className="settings-shell">
+            <nav className="settings-nav" aria-label="设置分类">
+              {([
+                { id: 'overview', label: '概览' },
+                { id: 'general', label: '通用' },
+                { id: 'model', label: '模型' },
+                { id: 'shortcuts', label: '快捷键' },
+                { id: 'mcp', label: 'MCP' },
+                { id: 'profile', label: '资料' },
+                { id: 'data', label: '数据' },
+              ] as const).map((item) => (
                 <button
+                  key={item.id}
                   type="button"
-                  aria-label="导出任务统计 Markdown"
-                  onClick={() => {
-                    const filename = exportTaskStatsFilename(statsRange)
-                    const content = exportTaskStatsMarkdown(taskStats, statsRange)
-                    downloadTextFile(filename, content)
-                    onRecordExport({
-                      kind: 'stats',
-                      label: `统计 · ${STATS_TIME_RANGE_OPTIONS.find((o) => o.id === statsRange)?.label ?? statsRange}`,
-                      filename,
-                      content,
-                    })
-                  }}
+                  className={settingsTab === item.id ? 'active' : ''}
+                  aria-current={settingsTab === item.id ? 'page' : undefined}
+                  onClick={() => setSettingsTab(item.id)}
                 >
-                  导出 MD
+                  {item.label}
                 </button>
-              </div>
-              <div className="stats-range" role="group" aria-label="统计时段">
-                {STATS_TIME_RANGE_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={statsRange === option.id ? 'active' : ''}
-                    aria-pressed={statsRange === option.id}
-                    onClick={() => setStatsRange(option.id)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <small>{taskStatsSummary}</small>
-              <div className="stats-grid">
-                <span>活跃 <em>{taskStats.active}</em></span>
-                <span>归档 <em>{taskStats.archived}</em></span>
-                <span>置顶 <em>{taskStats.pinned}</em></span>
-                <span>执行中 <em>{taskStats.running}</em></span>
-                <span>已完成 <em>{taskStats.done}</em></span>
-                <span>就绪 <em>{taskStats.idle}</em></span>
-                <span>消息 <em>{taskStats.messages}</em></span>
-                <span>标签种数 <em>{taskStats.tags}</em></span>
-              </div>
-              {taskStats.topTags.length > 0 && (
-                <div className="stats-tags" aria-label="热门标签">
-                  {taskStats.topTags.map((item) => (
-                    <em key={item.tag}>#{item.tag} · {item.count}</em>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="setting-row">
-              <span>审批模式</span>
-              <div className="setting-actions">
-                <button type="button" className={approvalMode === 'approve' ? 'active' : ''} onClick={() => onApprovalMode('approve')}>审批</button>
-                <button type="button" className={approvalMode === 'observe' ? 'active' : ''} onClick={() => onApprovalMode('observe')}>观察</button>
-              </div>
-            </div>
-            <div className="setting-row">
-              <span>自动连接</span>
-              <div className="setting-actions" role="group" aria-label="自动连接">
-                <button type="button" aria-label="开启自动连接" className={autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(true)}>开启</button>
-                <button type="button" aria-label="关闭自动连接" className={!autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(false)}>关闭</button>
-              </div>
-            </div>
-            <small className="mcp-hint">开启后：启动即连、选择工作区即连、意外断线自动重连（最多 5 次）。手动「断开 Grok」后不会自动再连。</small>
-            <div className="setting-row">
-              <span>主题</span>
-              <div className="setting-actions" role="group" aria-label="主题">
-                <button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => onTheme('dark')}>深色</button>
-                <button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => onTheme('light')}>浅色</button>
-              </div>
-            </div>
-            <div className="setting-row">
-              <span>字体大小</span>
-              <div className="setting-actions" role="group" aria-label="字体大小">
-                <button type="button" className={fontScale === 'sm' ? 'active' : ''} onClick={() => onFontScale('sm')}>小</button>
-                <button type="button" className={fontScale === 'md' ? 'active' : ''} onClick={() => onFontScale('md')}>中</button>
-                <button type="button" className={fontScale === 'lg' ? 'active' : ''} onClick={() => onFontScale('lg')}>大</button>
-              </div>
-            </div>
-            <div className="setting-row model-row">
-              <span>模型</span>
-              <div className="model-picker" role="listbox" aria-label="模型选择">
-                {MODEL_OPTIONS.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="option"
-                    aria-selected={preferredModel === option.id}
-                    className={preferredModel === option.id ? 'active' : ''}
-                    onClick={() => onPreferredModel(option.id)}
-                  >
-                    <strong>{option.label}</strong>
-                    <small>{option.description}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <small className="mcp-hint">
-              当前：{modelLabel(preferredModel)} · 字号 {fontScaleLabel(fontScale)}
-              {connected
-                ? ' · 已连接：优先 session/setModel，不支持时记住偏好并在下次新建会话注入 _meta.modelId'
-                : ' · 下次连接时注入 _meta.modelId'}
-              {workspace?.gitSource === 'local' ? ' · Live Diff 使用本地 git 回退' : ''}
-            </small>
-
-            <div className="setting-row">
-              <span>桌面通知</span>
-              <div className="setting-actions" role="group" aria-label="桌面通知">
-                <button type="button" aria-label="开启桌面通知" className={desktopNotifications ? 'active' : ''} onClick={() => onDesktopNotifications(true)}>开启</button>
-                <button type="button" aria-label="关闭桌面通知" className={!desktopNotifications ? 'active' : ''} onClick={() => onDesktopNotifications(false)}>关闭</button>
-              </div>
-            </div>
-            <small className="mcp-hint">任务完成、失败与权限请求时推送系统通知（需浏览器/系统授权）。</small>
-
-            <div className="shortcut-section" aria-label="快捷键">
-              <div className="mcp-heading">
-                <strong>快捷键</strong>
-                <button type="button" onClick={onResetShortcuts}>恢复默认</button>
-              </div>
-              <small className="mcp-hint">点击「录制」后按下新组合键；Esc 取消录制。</small>
-              {(Object.keys(DEFAULT_SHORTCUTS) as ShortcutId[]).map((id) => (
-                <div className="shortcut-row" key={id}>
-                  <span>{SHORTCUT_LABELS[id]}</span>
-                  <em>{shortcuts[id]}</em>
-                  <button
-                    type="button"
-                    className={recordingShortcut === id ? 'active' : ''}
-                    aria-label={`录制快捷键 ${SHORTCUT_LABELS[id]}`}
-                    onClick={() => onStartRecordShortcut(id)}
-                  >
-                    {recordingShortcut === id ? '按下按键…' : '录制'}
-                  </button>
-                </div>
               ))}
-            </div>
+            </nav>
 
-            <div className="mcp-section" aria-label="MCP 服务器">
-              <div className="mcp-heading">
-                <strong>MCP 服务器</strong>
-                <button
-                  type="button"
-                  onClick={() => onMcpServers([...mcpServers, createEmptyMcpServer()])}
-                >
-                  添加
-                </button>
-              </div>
-              <small className="mcp-hint">将在下次连接 Grok 时通过 session/new 传入（stdio）。</small>
-              {mcpServers.length === 0 && <div className="empty-conversations">尚未配置 MCP</div>}
-              {mcpServers.map((server, index) => (
-                <div className="mcp-card" key={`mcp-${index}`}>
-                  <label>
-                    名称
-                    <input
-                      aria-label={`MCP 名称 ${index + 1}`}
-                      value={server.name}
-                      onChange={(event) => updateServer(index, { name: event.target.value })}
-                      placeholder="filesystem"
-                    />
-                  </label>
-                  <label>
-                    命令
-                    <input
-                      aria-label={`MCP 命令 ${index + 1}`}
-                      value={server.command}
-                      onChange={(event) => updateServer(index, { command: event.target.value })}
-                      placeholder="npx"
-                    />
-                  </label>
-                  <label>
-                    参数
-                    <input
-                      aria-label={`MCP 参数 ${index + 1}`}
-                      value={formatArgsInput(server.args)}
-                      onChange={(event) => updateServer(index, { argsText: event.target.value })}
-                      placeholder="-y @modelcontextprotocol/server-filesystem ."
-                    />
-                  </label>
-                  <label>
-                    环境变量
-                    <textarea
-                      aria-label={`MCP 环境变量 ${index + 1}`}
-                      value={formatEnvInput(server.env)}
-                      onChange={(event) => updateServer(index, { envText: event.target.value })}
-                      placeholder={'API_KEY=xxx\nDEBUG=1'}
-                      rows={2}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="mcp-remove"
-                    aria-label={`删除 MCP ${index + 1}`}
-                    onClick={() => onMcpServers(mcpServers.filter((_, i) => i !== index))}
-                  >
-                    删除
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="profile-section" aria-label="资料卡设置">
-              <div className="mcp-heading">
-                <strong>资料卡</strong>
-                <small className="inline-hint">连接后自动拉取真实额度；以下为离线时的本地展示</small>
-              </div>
-              <label className="profile-field">
-                显示名称
-                <input
-                  aria-label="资料显示名称"
-                  value={profile.displayName}
-                  onChange={(event) => onProfile({ ...profile, displayName: event.target.value })}
-                  placeholder="本地工作区"
-                />
-              </label>
-              <label className="profile-field">
-                套餐标签
-                <input
-                  aria-label="资料套餐标签"
-                  value={profile.plan}
-                  onChange={(event) => onProfile({ ...profile, plan: event.target.value })}
-                  placeholder="Local"
-                />
-              </label>
-              <label className="profile-field">
-                额度展示（% · 离线回退）
-                <input
-                  aria-label="资料额度百分比"
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={profile.usagePercent}
-                  onChange={(event) => onProfile({
-                    ...profile,
-                    usagePercent: Number(event.target.value) || 0,
-                  })}
-                />
-              </label>
-            </div>
-
-            <div className="export-section" aria-label="导出任务">
-              <div className="mcp-heading">
-                <strong>导出 / 导入任务</strong>
-              </div>
-              <small className="mcp-hint">导出为 JSON/Markdown；可从导出的 JSON 合并或替换导入。</small>
-              <div className="setting-actions export-actions">
-                <button type="button" aria-label="导出全部任务 JSON" onClick={onExportAllJson}>导出 JSON</button>
-                <button type="button" aria-label="导出全部任务 Markdown" onClick={onExportAllMarkdown}>导出 Markdown</button>
-                <button type="button" aria-label="重置面板宽度" onClick={onResetLayout}>重置面板宽度</button>
-              </div>
-              <div className="setting-actions export-actions">
-                <button
-                  type="button"
-                  aria-label="合并导入任务 JSON"
-                  onClick={() => {
-                    setImportError('')
-                    setImportMessage('')
-                    importInputRef.current?.setAttribute('data-mode', 'merge')
-                    importInputRef.current?.click()
-                  }}
-                >
-                  合并导入
-                </button>
-                <button
-                  type="button"
-                  aria-label="替换导入任务 JSON"
-                  onClick={() => {
-                    setImportError('')
-                    setImportMessage('')
-                    importInputRef.current?.setAttribute('data-mode', 'replace')
-                    importInputRef.current?.click()
-                  }}
-                >
-                  替换导入
-                </button>
-              </div>
-              <input
-                ref={importInputRef}
-                type="file"
-                accept="application/json,.json"
-                aria-label="选择任务 JSON 文件"
-                className="hidden-file-input"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  const mode = (event.currentTarget.getAttribute('data-mode') as ImportTasksMode | null) ?? 'merge'
-                  event.currentTarget.value = ''
-                  if (!file) return
-                  const reader = new FileReader()
-                  reader.onload = () => {
-                    try {
-                      const raw = typeof reader.result === 'string' ? reader.result : ''
-                      const result = onImportTasks(raw, mode)
-                      setImportMessage(
-                        mode === 'replace'
-                          ? `已替换导入 ${result.imported} 个任务`
-                          : `已合并导入 ${result.imported} 个任务${result.skipped ? `，跳过 ${result.skipped} 个较旧任务` : ''}`,
-                      )
-                      setImportError('')
-                    } catch (error) {
-                      setImportError(error instanceof Error ? error.message : String(error))
-                      setImportMessage('')
-                    }
-                  }
-                  reader.onerror = () => {
-                    setImportError('读取文件失败')
-                    setImportMessage('')
-                  }
-                  reader.readAsText(file)
-                }}
-              />
-              {importMessage && <div className="import-ok" role="status">{importMessage}</div>}
-              {importError && <div className="connection-error" role="alert">{importError}</div>}
-            </div>
-
-            <div className="export-history" aria-label="最近导出">
-              <div className="mcp-heading">
-                <strong>最近导出</strong>
-                <button type="button" aria-label="清空导出记录" onClick={onClearExportHistory} disabled={exportHistory.length === 0}>
-                  清空
-                </button>
-              </div>
-              <small className="mcp-hint">
-                记录 patch 下载/复制、任务导出与会话回放（仅本地，最多 12 条）。有内容缓存时可一键重新下载。
-              </small>
-              {exportHistory.length === 0 && <div className="empty-conversations">暂无导出记录</div>}
-              {exportHistory.map((entry) => (
-                <div className="export-history-row" key={entry.id}>
-                  <div>
-                    <strong>{entry.label}</strong>
-                    <small>
-                      {exportHistoryKindLabel(entry.kind)} · {entry.filename}
-                    </small>
+            <div className="settings-content">
+              {settingsTab === 'overview' && (
+                <div className="settings-pane" aria-label="概览设置">
+                  <header className="settings-pane-head">
+                    <strong>运行状态</strong>
+                    <p>当前环境与工作区信息</p>
+                  </header>
+                  <div className="settings-kv-grid">
+                    <div className="settings-kv"><span>运行模式</span><em>{backend?.mode === 'native' ? '原生桌面' : '浏览器预览'}</em></div>
+                    <div className="settings-kv"><span>Grok 版本</span><em>{backend?.version || '未知'}</em></div>
+                    <div className="settings-kv"><span>连接状态</span><em className={connected ? 'ok' : ''}>{connected ? '已连接' : '未连接'}</em></div>
+                    <div className="settings-kv"><span>本地任务</span><em>{taskCount} 个</em></div>
+                    <div className="settings-kv wide"><span>工作区</span><em title={workspacePath || undefined}>{workspacePath || '未选择'}</em></div>
+                    <div className="settings-kv"><span>分支</span><em>{workspace?.branch || '未知'}</em></div>
                   </div>
-                  <div className="export-history-actions">
-                    <em>{formatExportHistoryTime(entry.at)}</em>
-                    {exportHistoryCanRedownload(entry) ? (
+
+                  <div className="stats-card" aria-label="任务统计">
+                    <div className="stats-card-head">
+                      <strong>任务统计</strong>
                       <button
                         type="button"
-                        aria-label={`重新下载 ${entry.filename}`}
-                        onClick={() => onRedownloadExport(entry)}
+                        aria-label="导出任务统计 Markdown"
+                        onClick={() => {
+                          const filename = exportTaskStatsFilename(statsRange)
+                          const content = exportTaskStatsMarkdown(taskStats, statsRange)
+                          downloadTextFile(filename, content)
+                          onRecordExport({
+                            kind: 'stats',
+                            label: `统计 · ${STATS_TIME_RANGE_OPTIONS.find((o) => o.id === statsRange)?.label ?? statsRange}`,
+                            filename,
+                            content,
+                          })
+                        }}
                       >
-                        重新下载
+                        导出 MD
                       </button>
-                    ) : (
-                      <span className="export-history-miss">无缓存</span>
+                    </div>
+                    <div className="stats-range" role="group" aria-label="统计时段">
+                      {STATS_TIME_RANGE_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={statsRange === option.id ? 'active' : ''}
+                          aria-pressed={statsRange === option.id}
+                          onClick={() => setStatsRange(option.id)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    <small>{taskStatsSummary}</small>
+                    <div className="stats-grid">
+                      <span>活跃 <em>{taskStats.active}</em></span>
+                      <span>归档 <em>{taskStats.archived}</em></span>
+                      <span>置顶 <em>{taskStats.pinned}</em></span>
+                      <span>执行中 <em>{taskStats.running}</em></span>
+                      <span>已完成 <em>{taskStats.done}</em></span>
+                      <span>就绪 <em>{taskStats.idle}</em></span>
+                      <span>消息 <em>{taskStats.messages}</em></span>
+                      <span>标签种数 <em>{taskStats.tags}</em></span>
+                    </div>
+                    {taskStats.topTags.length > 0 && (
+                      <div className="stats-tags" aria-label="热门标签">
+                        {taskStats.topTags.map((item) => (
+                          <em key={item.tag}>#{item.tag} · {item.count}</em>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
-              ))}
-            </div>
+              )}
 
-            <button type="button" className="danger-action" onClick={onClearAllTasks}>清空全部本地任务</button>
+              {settingsTab === 'general' && (
+                <div className="settings-pane" aria-label="通用设置">
+                  <header className="settings-pane-head">
+                    <strong>通用</strong>
+                    <p>外观、连接与通知偏好</p>
+                  </header>
+                  <div className="settings-group">
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>主题</span>
+                      </div>
+                      <div className="setting-actions" role="group" aria-label="主题">
+                        <button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => onTheme('dark')}>深色</button>
+                        <button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => onTheme('light')}>浅色</button>
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>字体大小</span>
+                        <small>当前 {fontScaleLabel(fontScale)}</small>
+                      </div>
+                      <div className="setting-actions" role="group" aria-label="字体大小">
+                        <button type="button" className={fontScale === 'sm' ? 'active' : ''} onClick={() => onFontScale('sm')}>小</button>
+                        <button type="button" className={fontScale === 'md' ? 'active' : ''} onClick={() => onFontScale('md')}>中</button>
+                        <button type="button" className={fontScale === 'lg' ? 'active' : ''} onClick={() => onFontScale('lg')}>大</button>
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>审批模式</span>
+                        <small>关键操作前是否等待确认</small>
+                      </div>
+                      <div className="setting-actions">
+                        <button type="button" className={approvalMode === 'approve' ? 'active' : ''} onClick={() => onApprovalMode('approve')}>审批</button>
+                        <button type="button" className={approvalMode === 'observe' ? 'active' : ''} onClick={() => onApprovalMode('observe')}>观察</button>
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>自动连接</span>
+                        <small>启动、切工作区、断线时自动重连（最多 5 次）；手动断开后不会再连</small>
+                      </div>
+                      <div className="setting-actions" role="group" aria-label="自动连接">
+                        <button type="button" aria-label="开启自动连接" className={autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(true)}>开启</button>
+                        <button type="button" aria-label="关闭自动连接" className={!autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(false)}>关闭</button>
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>桌面通知</span>
+                        <small>任务完成、失败与权限请求时推送（需系统授权）</small>
+                      </div>
+                      <div className="setting-actions" role="group" aria-label="桌面通知">
+                        <button type="button" aria-label="开启桌面通知" className={desktopNotifications ? 'active' : ''} onClick={() => onDesktopNotifications(true)}>开启</button>
+                        <button type="button" aria-label="关闭桌面通知" className={!desktopNotifications ? 'active' : ''} onClick={() => onDesktopNotifications(false)}>关闭</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'model' && (
+                <div className="settings-pane" aria-label="模型设置">
+                  <header className="settings-pane-head">
+                    <strong>模型</strong>
+                    <p>选择默认推理模型 · 当前 {modelLabel(preferredModel)}</p>
+                  </header>
+                  <div className="model-picker" role="listbox" aria-label="模型选择">
+                    {MODEL_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        role="option"
+                        aria-selected={preferredModel === option.id}
+                        className={preferredModel === option.id ? 'active' : ''}
+                        onClick={() => onPreferredModel(option.id)}
+                      >
+                        <strong>{option.label}</strong>
+                        <small>{option.description}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="settings-note">
+                    {connected
+                      ? '已连接：优先 session/setModel；不支持时记住偏好，下次新建会话注入 _meta.modelId。'
+                      : '下次连接时会注入 _meta.modelId。'}
+                    {workspace?.gitSource === 'local' ? ' Live Diff 使用本地 git 回退。' : ''}
+                  </p>
+                </div>
+              )}
+
+              {settingsTab === 'shortcuts' && (
+                <div className="settings-pane" aria-label="快捷键">
+                  <header className="settings-pane-head">
+                    <div>
+                      <strong>快捷键</strong>
+                      <p>点击「录制」后按下新组合键；Esc 取消</p>
+                    </div>
+                    <button type="button" className="settings-ghost-btn" onClick={onResetShortcuts}>恢复默认</button>
+                  </header>
+                  <div className="shortcut-section">
+                    {(Object.keys(DEFAULT_SHORTCUTS) as ShortcutId[]).map((id) => (
+                      <div className="shortcut-row" key={id}>
+                        <span>{SHORTCUT_LABELS[id]}</span>
+                        <em>{shortcuts[id]}</em>
+                        <button
+                          type="button"
+                          className={recordingShortcut === id ? 'active' : ''}
+                          aria-label={`录制快捷键 ${SHORTCUT_LABELS[id]}`}
+                          onClick={() => onStartRecordShortcut(id)}
+                        >
+                          {recordingShortcut === id ? '按下按键…' : '录制'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'mcp' && (
+                <div className="settings-pane" aria-label="MCP 服务器">
+                  <header className="settings-pane-head">
+                    <div>
+                      <strong>MCP 服务器</strong>
+                      <p>下次连接 Grok 时通过 session/new 传入（stdio）</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="settings-ghost-btn"
+                      onClick={() => onMcpServers([...mcpServers, createEmptyMcpServer()])}
+                    >
+                      添加
+                    </button>
+                  </header>
+                  <div className="mcp-section">
+                    {mcpServers.length === 0 && <div className="empty-conversations">尚未配置 MCP</div>}
+                    {mcpServers.map((server, index) => (
+                      <div className="mcp-card" key={`mcp-${index}`}>
+                        <div className="mcp-card-grid">
+                          <label>
+                            名称
+                            <input
+                              aria-label={`MCP 名称 ${index + 1}`}
+                              value={server.name}
+                              onChange={(event) => updateServer(index, { name: event.target.value })}
+                              placeholder="filesystem"
+                            />
+                          </label>
+                          <label>
+                            命令
+                            <input
+                              aria-label={`MCP 命令 ${index + 1}`}
+                              value={server.command}
+                              onChange={(event) => updateServer(index, { command: event.target.value })}
+                              placeholder="npx"
+                            />
+                          </label>
+                          <label className="span-2">
+                            参数
+                            <input
+                              aria-label={`MCP 参数 ${index + 1}`}
+                              value={formatArgsInput(server.args)}
+                              onChange={(event) => updateServer(index, { argsText: event.target.value })}
+                              placeholder="-y @modelcontextprotocol/server-filesystem ."
+                            />
+                          </label>
+                          <label className="span-2">
+                            环境变量
+                            <textarea
+                              aria-label={`MCP 环境变量 ${index + 1}`}
+                              value={formatEnvInput(server.env)}
+                              onChange={(event) => updateServer(index, { envText: event.target.value })}
+                              placeholder={'API_KEY=xxx\nDEBUG=1'}
+                              rows={2}
+                            />
+                          </label>
+                        </div>
+                        <button
+                          type="button"
+                          className="mcp-remove"
+                          aria-label={`删除 MCP ${index + 1}`}
+                          onClick={() => onMcpServers(mcpServers.filter((_, i) => i !== index))}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'profile' && (
+                <div className="settings-pane" aria-label="资料卡设置">
+                  <header className="settings-pane-head">
+                    <strong>资料卡</strong>
+                    <p>连接后自动拉取真实额度；以下为离线时的本地展示</p>
+                  </header>
+                  <div className="profile-section">
+                    <label className="profile-field">
+                      显示名称
+                      <input
+                        aria-label="资料显示名称"
+                        value={profile.displayName}
+                        onChange={(event) => onProfile({ ...profile, displayName: event.target.value })}
+                        placeholder="本地工作区"
+                      />
+                    </label>
+                    <label className="profile-field">
+                      套餐标签
+                      <input
+                        aria-label="资料套餐标签"
+                        value={profile.plan}
+                        onChange={(event) => onProfile({ ...profile, plan: event.target.value })}
+                        placeholder="Local"
+                      />
+                    </label>
+                    <label className="profile-field">
+                      额度展示（% · 离线回退）
+                      <input
+                        aria-label="资料额度百分比"
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={profile.usagePercent}
+                        onChange={(event) => onProfile({
+                          ...profile,
+                          usagePercent: Number(event.target.value) || 0,
+                        })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {settingsTab === 'data' && (
+                <div className="settings-pane" aria-label="数据设置">
+                  <header className="settings-pane-head">
+                    <strong>数据</strong>
+                    <p>导入导出任务、布局与危险操作</p>
+                  </header>
+
+                  <div className="export-section" aria-label="导出任务">
+                    <div className="settings-block-title">导出 / 导入</div>
+                    <p className="settings-note">导出为 JSON / Markdown；可从导出的 JSON 合并或替换导入。</p>
+                    <div className="setting-actions export-actions">
+                      <button type="button" aria-label="导出全部任务 JSON" onClick={onExportAllJson}>导出 JSON</button>
+                      <button type="button" aria-label="导出全部任务 Markdown" onClick={onExportAllMarkdown}>导出 Markdown</button>
+                      <button type="button" aria-label="重置面板宽度" onClick={onResetLayout}>重置面板宽度</button>
+                    </div>
+                    <div className="setting-actions export-actions">
+                      <button
+                        type="button"
+                        aria-label="合并导入任务 JSON"
+                        onClick={() => {
+                          setImportError('')
+                          setImportMessage('')
+                          importInputRef.current?.setAttribute('data-mode', 'merge')
+                          importInputRef.current?.click()
+                        }}
+                      >
+                        合并导入
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="替换导入任务 JSON"
+                        onClick={() => {
+                          setImportError('')
+                          setImportMessage('')
+                          importInputRef.current?.setAttribute('data-mode', 'replace')
+                          importInputRef.current?.click()
+                        }}
+                      >
+                        替换导入
+                      </button>
+                    </div>
+                    <input
+                      ref={importInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      aria-label="选择任务 JSON 文件"
+                      className="hidden-file-input"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        const mode = (event.currentTarget.getAttribute('data-mode') as ImportTasksMode | null) ?? 'merge'
+                        event.currentTarget.value = ''
+                        if (!file) return
+                        const reader = new FileReader()
+                        reader.onload = () => {
+                          try {
+                            const raw = typeof reader.result === 'string' ? reader.result : ''
+                            const result = onImportTasks(raw, mode)
+                            setImportMessage(
+                              mode === 'replace'
+                                ? `已替换导入 ${result.imported} 个任务`
+                                : `已合并导入 ${result.imported} 个任务${result.skipped ? `，跳过 ${result.skipped} 个较旧任务` : ''}`,
+                            )
+                            setImportError('')
+                          } catch (error) {
+                            setImportError(error instanceof Error ? error.message : String(error))
+                            setImportMessage('')
+                          }
+                        }
+                        reader.onerror = () => {
+                          setImportError('读取文件失败')
+                          setImportMessage('')
+                        }
+                        reader.readAsText(file)
+                      }}
+                    />
+                    {importMessage && <div className="import-ok" role="status">{importMessage}</div>}
+                    {importError && <div className="connection-error" role="alert">{importError}</div>}
+                  </div>
+
+                  <div className="export-history" aria-label="最近导出">
+                    <div className="mcp-heading">
+                      <strong>最近导出</strong>
+                      <button type="button" aria-label="清空导出记录" onClick={onClearExportHistory} disabled={exportHistory.length === 0}>
+                        清空
+                      </button>
+                    </div>
+                    <p className="settings-note">
+                      记录 patch、任务导出与会话回放（本地最多 12 条）。有缓存时可重新下载。
+                    </p>
+                    {exportHistory.length === 0 && <div className="empty-conversations">暂无导出记录</div>}
+                    {exportHistory.map((entry) => (
+                      <div className="export-history-row" key={entry.id}>
+                        <div>
+                          <strong>{entry.label}</strong>
+                          <small>
+                            {exportHistoryKindLabel(entry.kind)} · {entry.filename}
+                          </small>
+                        </div>
+                        <div className="export-history-actions">
+                          <em>{formatExportHistoryTime(entry.at)}</em>
+                          {exportHistoryCanRedownload(entry) ? (
+                            <button
+                              type="button"
+                              aria-label={`重新下载 ${entry.filename}`}
+                              onClick={() => onRedownloadExport(entry)}
+                            >
+                              重新下载
+                            </button>
+                          ) : (
+                            <span className="export-history-miss">无缓存</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="settings-danger-zone">
+                    <div className="settings-block-title">危险区域</div>
+                    <p className="settings-note">清空后不可恢复，请先导出备份。</p>
+                    <button type="button" className="danger-action" onClick={onClearAllTasks}>清空全部本地任务</button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {panel === 'extensions' && (

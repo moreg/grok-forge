@@ -785,6 +785,7 @@ describe('Grok Forge workspace', () => {
     expect(screen.queryByLabelText('重连进度通知')).toBeNull()
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '通用' }))
     await user.click(screen.getByRole('button', { name: '关闭自动连接' }))
     await user.click(screen.getByRole('button', { name: '开启自动连接' }))
     await user.click(screen.getByRole('button', { name: '关闭面板' }))
@@ -811,10 +812,12 @@ describe('Grok Forge workspace', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '通用' }))
     await user.click(screen.getByRole('button', { name: '浅色' }))
     expect(document.documentElement.dataset.theme).toBe('light')
     await user.click(screen.getByRole('button', { name: '大' }))
     expect(document.documentElement.dataset.font).toBe('lg')
+    await user.click(screen.getByRole('button', { name: '模型' }))
     await user.click(screen.getByRole('option', { name: /Grok 4\.5/ }))
     expect(screen.getByRole('option', { name: /Grok 4\.5/ })).toHaveAttribute('aria-selected', 'true')
     await user.click(screen.getByRole('button', { name: '关闭面板' }))
@@ -825,6 +828,7 @@ describe('Grok Forge workspace', () => {
     expect(acpMocks.setPreferredModel).toHaveBeenCalledWith('grok-4.5')
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '模型' }))
     await user.click(screen.getByRole('option', { name: /Grok Build/ }))
     expect(await screen.findByLabelText('系统消息')).toHaveTextContent('已切换模型为 Grok Build')
     expect(acpMocks.setSessionModel).toHaveBeenCalledWith('grok-build')
@@ -853,9 +857,9 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByLabelText('统计时段')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '今日' }))
     expect(screen.getByRole('button', { name: '今日' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText('最近导出')).toHaveTextContent('暂无导出记录')
 
     await user.click(screen.getByRole('button', { name: '导出任务统计 Markdown' }))
+    await user.click(screen.getByRole('button', { name: '数据' }))
     expect(screen.getByLabelText('最近导出')).toHaveTextContent('任务统计')
     await user.click(screen.getByRole('button', { name: '清空导出记录' }))
     expect(screen.getByLabelText('最近导出')).toHaveTextContent('暂无导出记录')
@@ -896,9 +900,11 @@ describe('Grok Forge workspace', () => {
     fireEvent.keyDown(screen.getByLabelText('调整审阅面板宽度'), { key: 'ArrowLeft' })
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '资料' }))
     fireEvent.change(screen.getByRole('textbox', { name: '资料显示名称' }), { target: { value: 'Forge Lab' } })
     fireEvent.change(screen.getByRole('textbox', { name: '资料套餐标签' }), { target: { value: 'Pro' } })
     fireEvent.change(screen.getByRole('spinbutton', { name: '资料额度百分比' }), { target: { value: '42' } })
+    await user.click(screen.getByRole('button', { name: '数据' }))
     await user.click(screen.getByRole('button', { name: '导出全部任务 JSON' }))
     await user.click(screen.getByRole('button', { name: '导出全部任务 Markdown' }))
     await user.click(screen.getByRole('button', { name: '重置面板宽度' }))
@@ -991,6 +997,7 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByLabelText('多文件对比')).toHaveTextContent('b.ts')
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '数据' }))
     const payload = JSON.stringify({
       version: 1,
       activeTaskId: 'import-1',
@@ -1203,8 +1210,10 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByRole('img', { name: /粘贴图片/ })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: '通用' }))
     await user.click(screen.getByRole('button', { name: '关闭桌面通知' }))
     expect(screen.getByRole('button', { name: '关闭桌面通知' })).toHaveClass('active')
+    await user.click(screen.getByRole('button', { name: '快捷键' }))
     await user.click(screen.getByRole('button', { name: '录制快捷键 新建任务' }))
     expect(screen.getByRole('button', { name: '录制快捷键 新建任务' })).toHaveTextContent('按下按键')
     fireEvent.keyDown(window, { key: 'm', ctrlKey: true, bubbles: true })
@@ -1267,6 +1276,7 @@ describe('Grok Forge workspace', () => {
     render(<App />)
 
     await user.click(screen.getByRole('button', { name: '设置' }))
+    await user.click(screen.getByRole('button', { name: 'MCP' }))
     await user.click(screen.getByRole('button', { name: '添加' }))
     await user.type(screen.getByRole('textbox', { name: 'MCP 名称 1' }), 'filesystem')
     await user.type(screen.getByRole('textbox', { name: 'MCP 命令 1' }), 'npx')
