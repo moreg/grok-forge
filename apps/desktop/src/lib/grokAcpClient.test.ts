@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { GrokAcpClient, NativeGrokTransport, type GrokTransport } from './grokAcpClient'
+import {
+  GrokAcpClient,
+  NativeGrokTransport,
+  parseBillingUsage,
+  toExtMethod,
+  type GrokTransport,
+} from './grokAcpClient'
 
 class FakeTransport implements GrokTransport {
   sent: Array<Record<string, unknown>> = []
@@ -301,10 +307,10 @@ describe('GrokAcpClient', () => {
       transport.sent.push(message)
       const method = message.method
       const result = method === 'session/new' ? { sessionId: 'session-42' }
-        : method === 'x.ai/git/status' ? { success: true, data: { branch: 'main', staged: [], unstaged: [{ path: 'src/App.tsx', type: 'edit', additions: 3, deletions: 1 }] } }
-          : method === 'x.ai/git/diffs' ? { success: true, data: { files: [{ path: 'src/App.tsx', additions: 3, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] } }
-            : method === 'x.ai/terminal/list' ? { success: true, data: { terminals: [{ terminalId: 'term-1', status: 'connected', name: 'npm test' }] } }
-              : method === 'x.ai/terminal/output' ? { success: true, data: { output: 'Tests: 1 passed', truncated: false, exitStatus: null } }
+        : method === '_x.ai/git/status' ? { success: true, data: { branch: 'main', staged: [], unstaged: [{ path: 'src/App.tsx', type: 'edit', additions: 3, deletions: 1 }] } }
+          : method === '_x.ai/git/diffs' ? { success: true, data: { files: [{ path: 'src/App.tsx', additions: 3, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }] } }
+            : method === '_x.ai/terminal/list' ? { success: true, data: { terminals: [{ terminalId: 'term-1', status: 'connected', name: 'npm test' }] } }
+              : method === '_x.ai/terminal/output' ? { success: true, data: { output: 'Tests: 1 passed', truncated: false, exitStatus: null } }
                 : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ jsonrpc: '2.0', id: message.id, result }))
     }
@@ -319,7 +325,7 @@ describe('GrokAcpClient', () => {
       gitSource: 'acp',
     })
     expect(transport.sent.map((message) => message.method)).toEqual([
-      'initialize', 'session/new', 'x.ai/git/status', 'x.ai/git/diffs', 'x.ai/terminal/list', 'x.ai/terminal/output',
+      'initialize', 'session/new', '_x.ai/git/status', '_x.ai/git/diffs', '_x.ai/terminal/list', '_x.ai/terminal/output',
     ])
     expect(client.capabilities.gitExtension).toBe(true)
     expect(client.capabilities.terminalExtension).toBe(true)
@@ -337,7 +343,7 @@ describe('GrokAcpClient', () => {
       const message = payload as Record<string, unknown>
       transport.sent.push(message)
       const method = message.method
-      if (method === 'x.ai/git/status' || method === 'x.ai/git/diffs' || method === 'x.ai/terminal/list') {
+      if (method === '_x.ai/git/status' || method === '_x.ai/git/diffs' || method === '_x.ai/terminal/list') {
         queueMicrotask(() => transport.listener({
           id: message.id,
           error: { message: 'Method not found' },
@@ -369,15 +375,15 @@ describe('GrokAcpClient', () => {
       transport.sent.push(message)
       const method = message.method
       const result = method === 'session/new' ? { sessionId: 'session-42' }
-        : method === 'x.ai/git/status' ? {
+        : method === '_x.ai/git/status' ? {
             branch: 42,
             staged: [null, { path: 'old.ts', oldPath: 'previous.ts', type: 'edit', additions: '3', deletions: 2 }],
             unstaged: [{ nope: true }],
           }
-          : method === 'x.ai/terminal/list' ? {
+          : method === '_x.ai/terminal/list' ? {
               data: { terminals: [null, { terminalId: 'term-2', status: 7, exitCode: 1 }] },
             }
-            : method === 'x.ai/terminal/output' ? { data: { output: 99, truncated: true } }
+            : method === '_x.ai/terminal/output' ? { data: { output: 99, truncated: true } }
               : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ id: message.id, result }))
     }
@@ -433,6 +439,57 @@ describe('GrokAcpClient', () => {
     unsubscribe()
     transport.listener(null)
     transport.listener({ id: 999, result: {} })
+  })
+
+  it('prefixes extension methods and parses billing usage', async () => {
+    expect(toExtMethod('x.ai/billing')).toBe('_x.ai/billing')
+    expect(toExtMethod('_x.ai/billing')).toBe('_x.ai/billing')
+    expect(parseBillingUsage({
+      config: {
+        creditUsagePercent: 42.7,
+        currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end: '2026-07-20T00:00:00Z' },
+        prepaidBalance: { val: -2500 },
+      },
+      subscription_tier: 'SuperGrok Heavy',
+    })).toEqual({
+      usagePercent: 42.7,
+      periodType: 'USAGE_PERIOD_TYPE_WEEKLY',
+      periodEnd: '2026-07-20T00:00:00Z',
+      tier: 'SuperGrok Heavy',
+      prepaidBalanceCents: 2500,
+    })
+    expect(parseBillingUsage({
+      config: {
+        monthly_limit: { val: 1000 },
+        used: { val: 250 },
+      },
+    })?.usagePercent).toBe(25)
+
+    const transport = new FakeTransport()
+    transport.send = async (payload) => {
+      const message = payload as Record<string, unknown>
+      transport.sent.push(message)
+      const method = message.method
+      const result = method === 'session/new'
+        ? { sessionId: 'session-42' }
+        : method === '_x.ai/billing'
+          ? {
+              config: { creditUsagePercent: 18, currentPeriod: { type: 'USAGE_PERIOD_TYPE_MONTHLY' } },
+              subscription_tier: 'Pro',
+            }
+          : { protocolVersion: 1 }
+      queueMicrotask(() => transport.listener({ id: message.id, result }))
+    }
+    const client = new GrokAcpClient(transport)
+    await client.connect('E:\\repo')
+    const usage = await client.fetchBilling()
+    expect(usage).toMatchObject({
+      usagePercent: 18,
+      periodType: 'USAGE_PERIOD_TYPE_MONTHLY',
+      tier: 'Pro',
+    })
+    expect(usage?.refreshedAt).toBeTypeOf('number')
+    expect(transport.sent.at(-1)).toMatchObject({ method: '_x.ai/billing', params: {} })
   })
 
   it('rejects protocol errors and prompts before connection', async () => {

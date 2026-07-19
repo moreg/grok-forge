@@ -223,9 +223,97 @@ export function profileInitials(name: string) {
   return cleaned.slice(0, 2).toUpperCase()
 }
 
-export function formatUsageLabel(percent: number) {
+/** Map billing period enum names (e.g. USAGE_PERIOD_TYPE_WEEKLY) to a short Chinese label. */
+export function periodLabelFromType(periodType?: string | null) {
+  const raw = (periodType ?? '').toUpperCase()
+  if (raw.includes('WEEKLY')) return '本周额度'
+  if (raw.includes('MONTHLY')) return '本月额度'
+  return '额度'
+}
+
+export function formatUsageLabel(percent: number, periodLabel = '本月额度') {
   const value = Math.min(100, Math.max(0, Math.round(percent)))
-  return `${value}% 本月额度`
+  return `${value}% ${periodLabel}`
+}
+
+/** Parse RFC3339 / ISO period-end timestamps from billing into epoch ms. */
+export function parsePeriodEndMs(periodEnd?: string | null): number | null {
+  if (!periodEnd || !periodEnd.trim()) return null
+  const ms = Date.parse(periodEnd.trim())
+  return Number.isFinite(ms) ? ms : null
+}
+
+/**
+ * Compact countdown until the billing period resets (quota rollover), e.g. "4d 17h".
+ * Matches common Grok UI style rather than the local poll interval.
+ */
+export function formatPeriodRemainingLabel(periodEnd?: string | null, now = Date.now()): string {
+  const end = parsePeriodEndMs(periodEnd)
+  if (end == null) return ''
+  const remaining = end - now
+  if (remaining <= 0) return '即将重置'
+  const totalMins = Math.floor(remaining / 60_000)
+  const days = Math.floor(totalMins / (60 * 24))
+  const hours = Math.floor((totalMins % (60 * 24)) / 60)
+  const mins = totalMins % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${mins}m`
+  if (mins > 0) return `${Math.max(1, mins)}m`
+  return '即将重置'
+}
+
+/** Local absolute time for tooltips, e.g. when the weekly quota resets. */
+export function formatPeriodEndAbsolute(periodEnd?: string | null): string {
+  const end = parsePeriodEndMs(periodEnd)
+  if (end == null) return ''
+  try {
+    return new Date(end).toLocaleString()
+  } catch {
+    return periodEnd?.trim() ?? ''
+  }
+}
+
+/** Human-readable “when was billing data last fetched” for the sidebar meter. */
+export function formatBillingRefreshLabel(refreshedAt: number, now = Date.now()) {
+  if (!Number.isFinite(refreshedAt) || refreshedAt <= 0) return ''
+  const delta = Math.max(0, now - refreshedAt)
+  if (delta < 45_000) return '刚刚更新'
+  if (delta < 60 * 60_000) {
+    const mins = Math.max(1, Math.round(delta / 60_000))
+    return `${mins} 分钟前更新`
+  }
+  if (delta < 24 * 60 * 60_000) {
+    const d = new Date(refreshedAt)
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${hh}:${mm} 更新`
+  }
+  const d = new Date(refreshedAt)
+  const month = d.getMonth() + 1
+  const day = d.getDate()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${month}/${day} ${hh}:${mm} 更新`
+}
+
+/**
+ * Hint for the next automatic *data poll* (not quota reset).
+ * Wording uses 更新 to avoid confusion with period/quota 重置.
+ */
+export function formatBillingNextRefreshLabel(
+  refreshedAt: number,
+  intervalMs: number,
+  now = Date.now(),
+) {
+  if (!Number.isFinite(refreshedAt) || refreshedAt <= 0 || intervalMs <= 0) return ''
+  const remaining = refreshedAt + intervalMs - now
+  if (remaining <= 15_000) return '即将自动更新'
+  if (remaining < 60_000) {
+    const secs = Math.max(1, Math.ceil(remaining / 1000))
+    return `约 ${secs} 秒后更新`
+  }
+  const mins = Math.max(1, Math.ceil(remaining / 60_000))
+  return `约 ${mins} 分钟后更新`
 }
 
 export async function ensureNotifyPermission(): Promise<boolean> {

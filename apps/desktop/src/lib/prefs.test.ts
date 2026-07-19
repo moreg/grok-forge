@@ -7,7 +7,13 @@ import {
   clampReviewWidth,
   clampSidebarWidth,
   eventMatchesShortcut,
+  formatBillingNextRefreshLabel,
+  formatBillingRefreshLabel,
+  formatPeriodEndAbsolute,
+  formatPeriodRemainingLabel,
   formatUsageLabel,
+  parsePeriodEndMs,
+  periodLabelFromType,
   layoutGridTemplate,
   MAX_EXPORT_CONTENT_CHARS,
   clearExportHistory,
@@ -175,6 +181,23 @@ describe('prefs helpers', () => {
     expect(profileInitials('Solo')).toBe('SO')
     expect(formatUsageLabel(72)).toBe('72% 本月额度')
     expect(formatUsageLabel(150)).toBe('100% 本月额度')
+    expect(formatUsageLabel(37, '本周额度')).toBe('37% 本周额度')
+    expect(periodLabelFromType('USAGE_PERIOD_TYPE_WEEKLY')).toBe('本周额度')
+    expect(periodLabelFromType('USAGE_PERIOD_TYPE_MONTHLY')).toBe('本月额度')
+    expect(periodLabelFromType(undefined)).toBe('额度')
+    const now = Date.UTC(2026, 6, 19, 15, 30, 0)
+    expect(formatBillingRefreshLabel(now - 10_000, now)).toBe('刚刚更新')
+    expect(formatBillingRefreshLabel(now - 5 * 60_000, now)).toBe('5 分钟前更新')
+    expect(formatBillingNextRefreshLabel(now - 30_000, 120_000, now)).toBe('约 2 分钟后更新')
+    expect(formatBillingNextRefreshLabel(now - 119_000, 120_000, now)).toBe('即将自动更新')
+    expect(parsePeriodEndMs('2026-07-24T08:30:00.000Z')).toBe(Date.parse('2026-07-24T08:30:00.000Z'))
+    expect(parsePeriodEndMs('not-a-date')).toBeNull()
+    // 4d 17h until period end
+    expect(formatPeriodRemainingLabel('2026-07-24T08:30:00.000Z', now)).toBe('4d 17h')
+    expect(formatPeriodRemainingLabel('2026-07-19T18:45:00.000Z', now)).toBe('3h 15m')
+    expect(formatPeriodRemainingLabel('2026-07-19T15:45:00.000Z', now)).toBe('15m')
+    expect(formatPeriodRemainingLabel('2026-07-19T15:00:00.000Z', now)).toBe('即将重置')
+    expect(formatPeriodEndAbsolute('2026-07-24T08:30:00.000Z')).toMatch(/2026/)
 
     localStorage.setItem('grok-forge-layout-widths', '{bad')
     expect(loadLayoutWidths()).toEqual(DEFAULT_LAYOUT)

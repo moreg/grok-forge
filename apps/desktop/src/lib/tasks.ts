@@ -7,6 +7,8 @@ export type MessageRole = 'user' | 'assistant' | 'system'
 export type ChatMessage = {
   role: MessageRole
   content: string
+  /** Local attachment refs (paths or data URLs) shown with the message. */
+  attachments?: string[]
 }
 
 export type PlanStep = {
@@ -74,6 +76,12 @@ export const MODEL_OPTIONS: ModelOption[] = [
 
 export const DEFAULT_MODEL_ID = MODEL_OPTIONS[0].id
 
+export function normalizeMessageAttachments(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const attachments = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+  return attachments.length > 0 ? attachments : undefined
+}
+
 export function normalizeMessages(value: unknown): ChatMessage[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((entry): ChatMessage[] => {
@@ -83,9 +91,10 @@ export function normalizeMessages(value: unknown): ChatMessage[] {
     if (entry === null || typeof entry !== 'object') return []
     const row = entry as Record<string, unknown>
     const content = typeof row.content === 'string' ? row.content.trim() : ''
-    if (!content) return []
+    const attachments = normalizeMessageAttachments(row.attachments)
+    if (!content && !attachments) return []
     const role = row.role === 'assistant' || row.role === 'system' ? row.role : 'user'
-    return [{ role, content }]
+    return attachments ? [{ role, content, attachments }] : [{ role, content }]
   })
 }
 
@@ -321,15 +330,36 @@ export function loadTaskSnapshot(): TaskSnapshot {
 }
 
 /** Drop oversized data-URL attachments before persisting so localStorage quota is not blown. */
+function sanitizeDataUrlList(items: string[] | undefined, maxDataUrlChars: number): string[] | undefined {
+  if (!items || items.length === 0) return items
+  const next = items.flatMap((item) => {
+    if (!item.startsWith('data:') || item.length <= maxDataUrlChars) return [item]
+    return []
+  })
+  return next
+}
+
 function sanitizeTasksForStorage(tasks: Task[]): Task[] {
   const maxDataUrlChars = 120_000
   return tasks.map((task) => {
-    const attachments = (task.attachments ?? []).flatMap((item) => {
-      if (!item.startsWith('data:') || item.length <= maxDataUrlChars) return [item]
-      return []
+    const attachments = sanitizeDataUrlList(task.attachments, maxDataUrlChars) ?? []
+    const messages = task.messages.map((message) => {
+      if (!message.attachments?.length) return message
+      const nextAttachments = sanitizeDataUrlList(message.attachments, maxDataUrlChars)
+      if (nextAttachments === message.attachments) return message
+      if (!nextAttachments || nextAttachments.length === 0) {
+        return { role: message.role, content: message.content }
+      }
+      return { ...message, attachments: nextAttachments }
     })
-    if (attachments.length === (task.attachments ?? []).length) return task
-    return { ...task, attachments }
+    const attachmentsChanged = attachments.length !== (task.attachments ?? []).length
+    const messagesChanged = messages.some((message, index) => message !== task.messages[index])
+    if (!attachmentsChanged && !messagesChanged) return task
+    return {
+      ...task,
+      attachments,
+      messages,
+    }
   })
 }
 

@@ -66,6 +66,26 @@ export type SetModelResult = {
   message: string
 }
 
+/** Live Grok Build coding-credit usage from `x.ai/billing`. */
+export type BillingUsage = {
+  /** Included allowance used this period, 0–100. */
+  usagePercent: number
+  /** Proto period type, e.g. USAGE_PERIOD_TYPE_WEEKLY. */
+  periodType?: string
+  /** RFC3339 period end when known. */
+  periodEnd?: string
+  /** Subscription tier display name when present. */
+  tier?: string
+  /** Prepaid (bought) balance in USD cents, absolute. */
+  prepaidBalanceCents?: number
+  /** Local wall-clock ms when this snapshot was fetched. */
+  refreshedAt?: number
+}
+
+/** How often the desktop shell re-polls `_x.ai/billing` while connected. */
+export const BILLING_POLL_INTERVAL_MS = 120_000
+
+
 export type AgentRuntimeCapabilities = {
   loadSession: boolean
   imagePrompt: boolean
@@ -104,6 +124,94 @@ function data(value: unknown): Record<string, unknown> {
 
 function number(value: unknown) {
   return typeof value === 'number' ? value : 0
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+/**
+ * ACP extension methods must be sent with a leading `_` on the wire.
+ * Bare `x.ai/...` methods are rejected with method_not_found by agent-client-protocol.
+ */
+export function toExtMethod(method: string) {
+  const trimmed = method.trim()
+  if (!trimmed) return trimmed
+  return trimmed.startsWith('_') ? trimmed : `_${trimmed}`
+}
+
+function centValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  const row = object(value)
+  if (!row) return undefined
+  return optionalNumber(row.val)
+}
+
+/** Parse `x.ai/billing` ExtResponse into UI-facing usage. */
+export function parseBillingUsage(payload: unknown): BillingUsage | null {
+  const root = object(payload)
+  if (!root) return null
+  // Some wrappers nest under result/data; prefer the first object that has config/usage fields.
+  const candidate = object(root.result)
+    ?? object(root.data)
+    ?? root
+  const config = object(candidate.config) ?? (
+    optionalNumber(candidate.creditUsagePercent) !== undefined
+      || optionalNumber(candidate.credit_usage_percent) !== undefined
+      || object(candidate.monthly_limit)
+      || object(candidate.monthlyLimit)
+      ? candidate
+      : null
+  )
+  if (!config && !optionalString(candidate.subscription_tier) && !optionalString(candidate.subscriptionTier)) {
+    return null
+  }
+
+  const cfg = config ?? {}
+  const creditPct = optionalNumber(cfg.creditUsagePercent)
+    ?? optionalNumber(cfg.credit_usage_percent)
+  const monthlyLimit = centValue(cfg.monthlyLimit ?? cfg.monthly_limit)
+  const used = centValue(cfg.used)
+  let usagePercent = 0
+  if (creditPct !== undefined) {
+    usagePercent = Math.min(100, Math.max(0, creditPct))
+  } else if (monthlyLimit && monthlyLimit > 0 && used !== undefined) {
+    usagePercent = Math.min(100, Math.max(0, (used / monthlyLimit) * 100))
+  } else {
+    // Still useful if only tier is present — show 0% rather than hiding the card.
+    usagePercent = 0
+  }
+
+  const period = object(cfg.currentPeriod) ?? object(cfg.current_period)
+  const periodType = optionalString(period?.type)
+    ?? optionalString(period?.period_type)
+    ?? optionalString(period?.periodType)
+  const periodEnd = optionalString(period?.end)
+    ?? optionalString(period?.endTime)
+    ?? optionalString(period?.end_time)
+    ?? optionalString(period?.endsAt)
+    ?? optionalString(period?.ends_at)
+    ?? optionalString(cfg.billingPeriodEnd)
+    ?? optionalString(cfg.billing_period_end)
+    ?? optionalString(cfg.periodEnd)
+    ?? optionalString(cfg.period_end)
+  const prepaid = centValue(cfg.prepaidBalance ?? cfg.prepaid_balance)
+  const tier = optionalString(candidate.subscription_tier)
+    ?? optionalString(candidate.subscriptionTier)
+    ?? optionalString(cfg.subscription_tier)
+    ?? optionalString(cfg.subscriptionTier)
+
+  return {
+    usagePercent,
+    periodType,
+    periodEnd,
+    tier,
+    prepaidBalanceCents: prepaid !== undefined ? Math.abs(prepaid) : undefined,
+  }
 }
 
 export class GrokAcpClient {
@@ -375,13 +483,28 @@ export class GrokAcpClient {
     }
   }
 
+  /**
+   * Fetch live Grok Build coding-credit usage via `_x.ai/billing`.
+   * Returns null when unauthenticated, unsupported, or the request fails.
+   */
+  async fetchBilling(): Promise<BillingUsage | null> {
+    try {
+      const result = await this.extRequest('x.ai/billing', {}, 15_000)
+      const usage = parseBillingUsage(result)
+      if (!usage) return null
+      return { ...usage, refreshedAt: Date.now() }
+    } catch {
+      return null
+    }
+  }
+
   async loadWorkspaceData(): Promise<WorkspaceData> {
     if (!this.sessionId) throw new Error('Grok 会话尚未建立')
     const sessionId = this.sessionId
     const [statusResponse, diffsResponse, terminalsResponse] = await Promise.all([
-      this.request('x.ai/git/status', { sessionId, includeUntracked: true, includeStats: true }).catch(() => null),
-      this.request('x.ai/git/diffs', { sessionId, from: 'HEAD', to: 'working', includePatch: true }).catch(() => null),
-      this.request('x.ai/terminal/list', { sessionId }).catch(() => null),
+      this.extRequest('x.ai/git/status', { sessionId, includeUntracked: true, includeStats: true }).catch(() => null),
+      this.extRequest('x.ai/git/diffs', { sessionId, from: 'HEAD', to: 'working', includePatch: true }).catch(() => null),
+      this.extRequest('x.ai/terminal/list', { sessionId }).catch(() => null),
     ])
     const acpGitReady = statusResponse !== null && diffsResponse !== null
     this.gitExtension = acpGitReady
@@ -424,7 +547,7 @@ export class GrokAcpClient {
     const terminals = await Promise.all(terminalEntries.flatMap(async (value): Promise<LiveTerminal[]> => {
       const terminal = object(value)
       if (!terminal || typeof terminal.terminalId !== 'string') return []
-      const output = data(await this.request('x.ai/terminal/output', { sessionId, terminalId: terminal.terminalId }).catch(() => ({})))
+      const output = data(await this.extRequest('x.ai/terminal/output', { sessionId, terminalId: terminal.terminalId }).catch(() => ({})))
       return [{
         terminalId: terminal.terminalId,
         status: typeof terminal.status === 'string' ? terminal.status : 'unknown',
@@ -484,6 +607,15 @@ export class GrokAcpClient {
         reject(reason instanceof Error ? reason : new Error(String(reason)))
       })
     })
+  }
+
+  /** JSON-RPC call for ACP agent extension methods (`_x.ai/...` on the wire). */
+  private extRequest<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
+    return this.request<T>(toExtMethod(method), params, timeoutMs)
   }
 
   private emit(event: AcpUiEvent) {

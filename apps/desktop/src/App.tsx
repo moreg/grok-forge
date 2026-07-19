@@ -201,6 +201,10 @@ import {
   exportHistoryCanRedownload,
   exportHistoryKindLabel,
   exportHistoryMime,
+  formatBillingNextRefreshLabel,
+  formatBillingRefreshLabel,
+  formatPeriodEndAbsolute,
+  formatPeriodRemainingLabel,
   formatExportHistoryTime,
   formatUsageLabel,
   layoutGridTemplate,
@@ -209,6 +213,7 @@ import {
   loadLayoutWidths,
   loadShortcuts,
   loadWorkspaceProfile,
+  periodLabelFromType,
   profileInitials,
   pushExportHistory,
   resetShortcuts,
@@ -228,7 +233,12 @@ import {
   parseEnvInput,
   saveMcpServers,
 } from './lib/mcp'
-import { GrokAcpClient, type WorkspaceData } from './lib/grokAcpClient'
+import {
+  BILLING_POLL_INTERVAL_MS,
+  GrokAcpClient,
+  type BillingUsage,
+  type WorkspaceData,
+} from './lib/grokAcpClient'
 import { MarkdownView } from './lib/MarkdownView'
 
 type ReviewFile = {
@@ -273,6 +283,94 @@ function asEvents(value: unknown[]): AcpUiEvent[] {
   })
 }
 
+/** Merge tool updates by toolCallId (and replace the latest plan) so the live list does not grow unbounded. */
+function mergeLiveEvent(events: unknown[], event: AcpUiEvent): unknown[] {
+  if (event.kind === 'tool' && event.toolCallId) {
+    const index = events.findIndex((entry) => {
+      if (entry === null || typeof entry !== 'object') return false
+      const row = entry as { kind?: unknown; toolCallId?: unknown }
+      return row.kind === 'tool' && row.toolCallId === event.toolCallId
+    })
+    if (index >= 0) {
+      const next = events.slice()
+      next[index] = event
+      return next
+    }
+  }
+  if (event.kind === 'plan') {
+    const index = events.findIndex((entry) => {
+      if (entry === null || typeof entry !== 'object') return false
+      return (entry as { kind?: unknown }).kind === 'plan'
+    })
+    if (index >= 0) {
+      const next = events.slice()
+      next[index] = event
+      return next
+    }
+  }
+  return [...events, event]
+}
+
+function thoughtPreview(text: string, max = 72): string {
+  const flat = text.trim().replace(/\s+/g, ' ')
+  if (flat.length <= max) return flat
+  return `${flat.slice(0, max)}…`
+}
+
+/** Collapsible agent-thought stream: auto-folds when the reply starts so the answer stays in focus. */
+function LiveThoughtPanel({ text, hasReply }: { text: string; hasReply: boolean }) {
+  const [open, setOpen] = useState(!hasReply)
+  const manualRef = useRef(false)
+  const wasEmptyRef = useRef(true)
+
+  useEffect(() => {
+    if (!text.trim()) {
+      wasEmptyRef.current = true
+      manualRef.current = false
+      setOpen(true)
+      return
+    }
+    if (wasEmptyRef.current) {
+      wasEmptyRef.current = false
+      manualRef.current = false
+      setOpen(!hasReply)
+    }
+  }, [text, hasReply])
+
+  useEffect(() => {
+    if (hasReply && !manualRef.current) setOpen(false)
+  }, [hasReply])
+
+  const toggle = () => {
+    manualRef.current = true
+    setOpen((value) => !value)
+  }
+
+  return (
+    <div className={`live-thought ${open ? 'is-open' : 'is-collapsed'}`} aria-label="Grok 思考中">
+      <button
+        type="button"
+        className="live-thought-toggle"
+        aria-expanded={open}
+        aria-label={open ? '折叠思考过程' : '展开思考过程'}
+        onClick={toggle}
+      >
+        <Sparkles size={13} />
+        <span className="live-thought-label">思考过程</span>
+        {!open && (
+          <em className="live-thought-preview">{thoughtPreview(text)}</em>
+        )}
+        {open ? <ChevronDown size={13} className="live-thought-chevron" /> : <ChevronRight size={13} className="live-thought-chevron" />}
+      </button>
+      {open && (
+        <div className="live-thought-body">
+          <MarkdownView source={text} className="live-thought-text md-thought" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkspaceSidebar({
   workspacePath,
   workspaces,
@@ -300,6 +398,9 @@ function WorkspaceSidebar({
   onOpenSessions,
   onOpenSearch,
   profile,
+  billing = null,
+  billingRefreshing = false,
+  onRefreshBilling,
 }: {
   workspacePath: string
   workspaces: string[]
@@ -327,7 +428,17 @@ function WorkspaceSidebar({
   onOpenSessions: () => void
   onOpenSearch: () => void
   profile: WorkspaceProfile
+  /** Live coding-credit usage from `x.ai/billing` when connected. */
+  billing?: BillingUsage | null
+  billingRefreshing?: boolean
+  onRefreshBilling?: () => void
 }) {
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!billing?.refreshedAt) return
+    const timer = window.setInterval(() => setNowTick(Date.now()), 15_000)
+    return () => window.clearInterval(timer)
+  }, [billing?.refreshedAt])
   const workspaceName = workspacePath.split(/[\\/]/).filter(Boolean).at(-1) ?? '选择工作区'
   const allTags = useMemo(() => collectTaskTags(tasks), [tasks])
   const archivedCount = useMemo(() => countArchivedTasks(tasks), [tasks])
@@ -337,6 +448,25 @@ function WorkspaceSidebar({
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [conversationsCollapsed, setConversationsCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('grok-forge-conversations-collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+
+  const toggleConversationsCollapsed = () => {
+    setConversationsCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem('grok-forge-conversations-collapsed', next ? '1' : '0')
+      } catch {
+        // ignore quota / private mode
+      }
+      return next
+    })
+  }
 
   useEffect(() => {
     if (!menuTaskId) return
@@ -387,14 +517,25 @@ function WorkspaceSidebar({
           工作区
           <button aria-label="添加工作区" type="button" onClick={onSelectWorkspace}><Plus size={14} /></button>
         </div>
-        <button className="workspace-card active" aria-label="选择工作区" type="button" onClick={onSelectWorkspace}>
-          <div className="workspace-icon"><FolderGit2 size={16} /></div>
-          <div>
-            <strong>{workspaceName}</strong>
-            <small>{workspacePath || '尚未选择工作区'}</small>
-          </div>
-          <ChevronDown size={14} />
-        </button>
+        <div className="workspace-card-row active">
+          <button className="workspace-card" aria-label="选择工作区" type="button" onClick={onSelectWorkspace}>
+            <div className="workspace-icon"><FolderGit2 size={16} /></div>
+            <div>
+              <strong>{workspaceName}</strong>
+              <small>{workspacePath || '尚未选择工作区'}</small>
+            </div>
+          </button>
+          <button
+            type="button"
+            className="workspace-collapse"
+            aria-label={conversationsCollapsed ? '展开最近任务' : '收起最近任务'}
+            aria-expanded={!conversationsCollapsed}
+            title={conversationsCollapsed ? '展开最近任务' : '收起最近任务'}
+            onClick={toggleConversationsCollapsed}
+          >
+            {conversationsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </div>
         {recent.map((path) => {
           const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
           return (
@@ -415,133 +556,149 @@ function WorkspaceSidebar({
         })}
       </div>
 
-      <div className="sidebar-section conversations">
+      <div className={`sidebar-section conversations ${conversationsCollapsed ? 'is-collapsed' : ''}`}>
         <div className="section-label">
           最近任务
-          <button type="button" aria-label="打开全局搜索" onClick={onOpenSearch} title="全局搜索">
-            <Search size={14} />
-          </button>
-        </div>
-        <div className="sidebar-stats" aria-label="任务统计摘要">
-          {formatTaskStatsSummary(summarizeTaskStats(tasks))}
-        </div>
-        {allTags.length > 0 && (
-          <div className="tag-filter" aria-label="标签分组">
+          <div className="section-label-actions">
+            <button type="button" aria-label="打开全局搜索" onClick={onOpenSearch} title="全局搜索">
+              <Search size={14} />
+            </button>
             <button
               type="button"
-              className={!tagFilter ? 'active' : ''}
-              aria-pressed={!tagFilter}
-              onClick={() => onTagFilter(null)}
+              className="workspace-collapse section-collapse"
+              aria-label={conversationsCollapsed ? '展开最近任务' : '收起最近任务'}
+              aria-expanded={!conversationsCollapsed}
+              title={conversationsCollapsed ? '展开最近任务' : '收起最近任务'}
+              onClick={toggleConversationsCollapsed}
             >
-              全部
-            </button>
-            {allTags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                className={tagFilter === tag ? 'active' : ''}
-                aria-pressed={tagFilter === tag}
-                aria-label={`筛选标签 ${tag}`}
-                onClick={() => onTagFilter(tagFilter === tag ? null : tag)}
-              >
-                #{tag}
-              </button>
-            ))}
-          </div>
-        )}
-        {archivedCount > 0 && (
-          <div className="archive-toggle-row">
-            <button
-              type="button"
-              className={showArchived ? 'active' : ''}
-              aria-pressed={showArchived}
-              aria-label={showArchived ? '隐藏已归档任务' : '显示已归档任务'}
-              onClick={() => onShowArchived(!showArchived)}
-            >
-              {showArchived ? '隐藏归档' : `显示归档 (${archivedCount})`}
+              {conversationsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
             </button>
           </div>
-        )}
-        {sorted.length === 0 ? (
-          <div className="empty-conversations">暂无匹配任务</div>
-        ) : (
-          sorted.map((task) => (
-            <div key={task.id} className={`conversation-wrap ${task.pinned ? 'pinned' : ''} ${task.archived ? 'archived' : ''}`}>
-              {renamingId === task.id ? (
-                <form
-                  className="conversation-rename"
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    commitSidebarRename(task.id)
-                  }}
-                >
-                  <input
-                    aria-label={`重命名任务 ${task.title}`}
-                    value={renameDraft}
-                    autoFocus
-                    onChange={(event) => setRenameDraft(event.target.value)}
-                    onBlur={() => commitSidebarRename(task.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') {
-                        setRenamingId(null)
-                        setRenameDraft('')
-                      }
-                    }}
-                  />
-                </form>
-              ) : (
+        </div>
+        {!conversationsCollapsed && (
+          <>
+            <div className="sidebar-stats" aria-label="任务统计摘要">
+              {formatTaskStatsSummary(summarizeTaskStats(tasks))}
+            </div>
+            {allTags.length > 0 && (
+              <div className="tag-filter" aria-label="标签分组">
                 <button
                   type="button"
-                  className={`conversation ${task.id === activeTaskId ? 'active' : ''}`}
-                  aria-label={`切换到任务 ${task.title}`}
-                  aria-current={task.id === activeTaskId ? 'true' : undefined}
-                  onClick={() => onSelectTask(task.id)}
-                  onContextMenu={(event) => openTaskMenu(event, task.id)}
+                  className={!tagFilter ? 'active' : ''}
+                  aria-pressed={!tagFilter}
+                  onClick={() => onTagFilter(null)}
                 >
-                  <span className="conversation-title">
-                    {task.pinned && <Star size={11} className="pin-badge" aria-hidden="true" />}
-                    {task.title}
-                  </span>
-                  <small>
-                    <CircleDot size={9} />
-                    {statusLabel(task.status)}
-                    {task.messages.length > 0 ? ` · ${task.messages.length} 条消息` : ''}
-                    {task.pinned ? ' · 置顶' : ''}
-                    {task.archived ? ' · 已归档' : ''}
-                  </small>
-                  {(task.tags?.length ?? 0) > 0 && (
-                    <span className="task-tags">
-                      {task.tags!.slice(0, 3).map((tag) => (
-                        <em key={tag}>#{tag}</em>
-                      ))}
-                    </span>
-                  )}
+                  全部
                 </button>
-              )}
-              <div className="conversation-actions">
+                {allTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    className={tagFilter === tag ? 'active' : ''}
+                    aria-pressed={tagFilter === tag}
+                    aria-label={`筛选标签 ${tag}`}
+                    onClick={() => onTagFilter(tagFilter === tag ? null : tag)}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+            )}
+            {archivedCount > 0 && (
+              <div className="archive-toggle-row">
                 <button
                   type="button"
-                  className={`conversation-pin ${task.pinned ? 'active' : ''}`}
-                  aria-label={task.pinned ? `取消置顶 ${task.title}` : `置顶 ${task.title}`}
-                  aria-pressed={Boolean(task.pinned)}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onTogglePin(task.id)
-                  }}
+                  className={showArchived ? 'active' : ''}
+                  aria-pressed={showArchived}
+                  aria-label={showArchived ? '隐藏已归档任务' : '显示已归档任务'}
+                  onClick={() => onShowArchived(!showArchived)}
                 >
-                  <Star size={13} fill={task.pinned ? 'currentColor' : 'none'} />
-                </button>
-                <button
-                  type="button"
-                  className="conversation-more"
-                  aria-label={`任务菜单 ${task.title}`}
-                  onClick={(event) => openTaskMenu(event, task.id)}
-                >
-                  <MoreHorizontal size={14} />
+                  {showArchived ? '隐藏归档' : `显示归档 (${archivedCount})`}
                 </button>
               </div>
-            </div>
-          ))
+            )}
+            {sorted.length === 0 ? (
+              <div className="empty-conversations">暂无匹配任务</div>
+            ) : (
+              sorted.map((task) => (
+                <div key={task.id} className={`conversation-wrap ${task.pinned ? 'pinned' : ''} ${task.archived ? 'archived' : ''}`}>
+                  {renamingId === task.id ? (
+                    <form
+                      className="conversation-rename"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        commitSidebarRename(task.id)
+                      }}
+                    >
+                      <input
+                        aria-label={`重命名任务 ${task.title}`}
+                        value={renameDraft}
+                        autoFocus
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onBlur={() => commitSidebarRename(task.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Escape') {
+                            setRenamingId(null)
+                            setRenameDraft('')
+                          }
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className={`conversation ${task.id === activeTaskId ? 'active' : ''}`}
+                      aria-label={`切换到任务 ${task.title}`}
+                      aria-current={task.id === activeTaskId ? 'true' : undefined}
+                      onClick={() => onSelectTask(task.id)}
+                      onContextMenu={(event) => openTaskMenu(event, task.id)}
+                    >
+                      <span className="conversation-title">
+                        {task.pinned && <Star size={11} className="pin-badge" aria-hidden="true" />}
+                        {task.title}
+                      </span>
+                      <small>
+                        <CircleDot size={9} />
+                        {statusLabel(task.status)}
+                        {task.messages.length > 0 ? ` · ${task.messages.length} 条消息` : ''}
+                        {task.pinned ? ' · 置顶' : ''}
+                        {task.archived ? ' · 已归档' : ''}
+                      </small>
+                      {(task.tags?.length ?? 0) > 0 && (
+                        <span className="task-tags">
+                          {task.tags!.slice(0, 3).map((tag) => (
+                            <em key={tag}>#{tag}</em>
+                          ))}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  <div className="conversation-actions">
+                    <button
+                      type="button"
+                      className={`conversation-pin ${task.pinned ? 'active' : ''}`}
+                      aria-label={task.pinned ? `取消置顶 ${task.title}` : `置顶 ${task.title}`}
+                      aria-pressed={Boolean(task.pinned)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onTogglePin(task.id)
+                      }}
+                    >
+                      <Star size={13} fill={task.pinned ? 'currentColor' : 'none'} />
+                    </button>
+                    <button
+                      type="button"
+                      className="conversation-more"
+                      aria-label={`任务菜单 ${task.title}`}
+                      onClick={(event) => openTaskMenu(event, task.id)}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </>
         )}
         {menuTaskId && (
           <div
@@ -623,20 +780,93 @@ function WorkspaceSidebar({
         <button type="button" onClick={onOpenSessions} aria-label="会话列表"><MessageSquarePlus size={16} /> 会话</button>
         <button type="button" onClick={onOpenExtensions} aria-label="扩展中心"><LayoutGrid size={16} /> 扩展中心</button>
         <button type="button" onClick={onOpenSettings} aria-label="设置"><Settings size={16} /> 设置</button>
-        <div className="profile" aria-label="工作区资料">
-          <div className="avatar" aria-hidden="true">{profileInitials(profile.displayName)}</div>
-          <div>
-            <strong>{profile.displayName}</strong>
-            <small>
-              <span className="plan-badge">{profile.plan}</span>
-              {connected ? ' · 已连接' : ` · ${backendVersion || '未连接'}`}
-            </small>
-            <div className="usage-meter" aria-label={formatUsageLabel(profile.usagePercent)}>
-              <span style={{ width: `${Math.min(100, Math.max(0, profile.usagePercent))}%` }} />
+        {(() => {
+          const usagePercent = billing
+            ? Math.min(100, Math.max(0, billing.usagePercent))
+            : Math.min(100, Math.max(0, profile.usagePercent))
+          const periodLabel = billing
+            ? periodLabelFromType(billing.periodType)
+            : '本月额度'
+          const usageLabel = formatUsageLabel(usagePercent, periodLabel)
+          const planLabel = billing?.tier?.trim() || profile.plan
+          const periodRemain = billing?.periodEnd
+            ? formatPeriodRemainingLabel(billing.periodEnd, nowTick)
+            : ''
+          const periodEndAbs = billing?.periodEnd
+            ? formatPeriodEndAbsolute(billing.periodEnd)
+            : ''
+          const periodTitle = periodEndAbs
+            ? `本周期额度将于 ${periodEndAbs} 重置`
+            : periodRemain
+              ? '本周期额度重置倒计时'
+              : ''
+          const refreshedAt = billing?.refreshedAt
+          const refreshLabel = refreshedAt
+            ? formatBillingRefreshLabel(refreshedAt, nowTick)
+            : ''
+          const nextLabel = refreshedAt
+            ? formatBillingNextRefreshLabel(refreshedAt, BILLING_POLL_INTERVAL_MS, nowTick)
+            : ''
+          const refreshTitle = [
+            periodTitle,
+            refreshLabel ? `用量数据${refreshLabel}` : '',
+            nextLabel ? `自动轮询：${nextLabel}` : '',
+            onRefreshBilling ? '点击立即拉取最新用量' : '',
+          ].filter(Boolean).join('\n')
+          const meterLabel = periodRemain ? `${usageLabel} · ${periodRemain}` : usageLabel
+          return (
+            <div className="profile" aria-label="工作区资料">
+              <div className="avatar" aria-hidden="true">{profileInitials(profile.displayName)}</div>
+              <div className="profile-meta">
+                <strong>{profile.displayName}</strong>
+                <small>
+                  <span className="plan-badge">{planLabel}</span>
+                  {connected ? ' · 已连接' : ` · ${backendVersion || '未连接'}`}
+                </small>
+                <div className="usage-meter" aria-label={meterLabel} title={periodTitle || undefined}>
+                  <span style={{ width: `${usagePercent}%` }} />
+                </div>
+                <em className="usage-label" title={periodTitle || undefined}>
+                  {usageLabel}
+                  {periodRemain ? (
+                    <span className="usage-period-remain" aria-label={`额度重置倒计时 ${periodRemain}`}>
+                      {' · '}{periodRemain}
+                    </span>
+                  ) : null}
+                  {billing ? <span className="usage-live"> · 实时</span> : null}
+                </em>
+                {billing?.prepaidBalanceCents != null && billing.prepaidBalanceCents > 0 && (
+                  <em className="usage-label prepaid">
+                    余额 ${(billing.prepaidBalanceCents / 100).toFixed(billing.prepaidBalanceCents % 100 === 0 ? 0 : 2)}
+                  </em>
+                )}
+                {billing && (refreshLabel || onRefreshBilling) && (
+                  onRefreshBilling ? (
+                    <button
+                      type="button"
+                      className={`usage-refresh${billingRefreshing ? ' is-refreshing' : ''}`}
+                      aria-label={billingRefreshing ? '正在更新用量' : '更新用量数据'}
+                      title={refreshTitle || '更新用量数据'}
+                      disabled={billingRefreshing || !connected}
+                      onClick={() => onRefreshBilling()}
+                    >
+                      {billingRefreshing
+                        ? '更新中…'
+                        : refreshLabel
+                          ? `${refreshLabel}${nextLabel ? ` · ${nextLabel}` : ''}`
+                          : '更新用量'}
+                    </button>
+                  ) : (
+                    <em className="usage-label refresh-hint" title={refreshTitle}>
+                      {refreshLabel}
+                      {nextLabel ? ` · ${nextLabel}` : ''}
+                    </em>
+                  )
+                )}
+              </div>
             </div>
-            <em className="usage-label">{formatUsageLabel(profile.usagePercent)}</em>
-          </div>
-        </div>
+          )
+        })()}
       </div>
     </aside>
   )
@@ -700,17 +930,68 @@ function ResizeHandle({
 }
 
 function ExecutionTimeline({ steps }: { steps: PlanStep[] }) {
-  if (steps.length === 0) return null
   const doneCount = steps.filter((step) => step.status === 'completed').length
+  const failedCount = steps.filter((step) => step.status === 'failed').length
+  const running = steps.some((step) => step.status === 'in_progress')
+  const finished = steps.length > 0
+    && !running
+    && steps.every((step) => step.status === 'completed' || step.status === 'failed')
+
+  // Running/pending → open; fully finished history → collapsed until the user expands.
+  const [open, setOpen] = useState(() => !finished)
+  const manualRef = useRef(false)
+  const sawRunningRef = useRef(running)
+
+  useEffect(() => {
+    if (steps.length === 0) return
+    if (running) {
+      sawRunningRef.current = true
+      // New activity: expand unless the user explicitly collapsed.
+      if (!manualRef.current) setOpen(true)
+      return
+    }
+    // After a run finishes, auto-collapse so long tool lists don't flood the chat.
+    if (finished && !manualRef.current) {
+      setOpen(false)
+    }
+  }, [running, finished, steps.length])
+
+  if (steps.length === 0) return null
+
+  const toggle = () => {
+    manualRef.current = true
+    setOpen((value) => !value)
+  }
+
+  const lastStep = steps[steps.length - 1]
+  const preview = running
+    ? (lastStep?.content || '执行中…')
+    : failedCount > 0
+      ? `${doneCount}/${steps.length} 已完成 · ${failedCount} 失败`
+      : `${doneCount}/${steps.length} 已完成`
 
   return (
-    <div className="timeline-card" aria-label="执行时间线" role="region">
-      <div className="timeline-heading">
+    <div
+      className={`timeline-card ${open ? 'is-open' : 'is-collapsed'}`}
+      aria-label="执行时间线"
+      role="region"
+    >
+      <button
+        type="button"
+        className="timeline-heading"
+        aria-expanded={open}
+        aria-label={open ? '折叠执行过程' : '展开执行过程'}
+        onClick={toggle}
+      >
         <Activity size={13} />
-        执行过程
-        <span>{doneCount}/{steps.length} 已完成</span>
-      </div>
-      {steps.map((step, index) => {
+        <span className="timeline-heading-label">执行过程</span>
+        {!open && <em className="timeline-preview">{preview}</em>}
+        <span className="timeline-heading-count">{doneCount}/{steps.length} 已完成</span>
+        {open
+          ? <ChevronDown size={13} className="timeline-chevron" />
+          : <ChevronRight size={13} className="timeline-chevron" />}
+      </button>
+      {open && steps.map((step, index) => {
         const className = step.status === 'completed'
           ? 'done'
           : step.status === 'in_progress'
@@ -760,6 +1041,36 @@ function ChangeSummary({ workspace, onOpenReview }: { workspace: WorkspaceData |
   )
 }
 
+function MessageAttachments({ attachments }: { attachments?: string[] }) {
+  if (!attachments || attachments.length === 0) return null
+  return (
+    <div className="message-attachments" aria-label="消息附件">
+      {attachments.map((file, index) => {
+        if (isDataImageAttachment(file)) {
+          return (
+            <a
+              key={`img-${index}`}
+              className="message-image-link"
+              href={file}
+              target="_blank"
+              rel="noreferrer noopener"
+              title="在新标签页打开图片"
+            >
+              <img src={file} alt={attachmentLabel(file)} className="message-image" />
+            </a>
+          )
+        }
+        return (
+          <span key={`file-${index}`} className="message-file-chip" title={file}>
+            <Paperclip size={12} />
+            {attachmentLabel(file)}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 function MessageList({
   messages,
   highlightIndex = null,
@@ -791,7 +1102,10 @@ function MessageList({
               data-message-index={index}
               key={`${message.role}-${index}`}
             >
-              <MarkdownView source={message.content} className="md-user" />
+              {message.content.trim() ? (
+                <MarkdownView source={message.content} className="md-user" />
+              ) : null}
+              <MessageAttachments attachments={message.attachments} />
             </div>
           )
         }
@@ -810,6 +1124,7 @@ function MessageList({
                 source={message.content}
                 className={message.role === 'system' ? 'md-system live-message' : 'md-agent live-message'}
               />
+              <MessageAttachments attachments={message.attachments} />
             </div>
           </div>
         )
@@ -862,6 +1177,8 @@ function ConversationPane({
   onWorkspaceData,
   onOpenReview,
   onConnectionChange,
+  onBillingChange,
+  onBillingRefreshingChange,
   onTaskPatch,
   onNewTask,
   onRenameTask,
@@ -886,6 +1203,8 @@ function ConversationPane({
   onWorkspaceData: (data: WorkspaceData) => void
   onOpenReview: () => void
   onConnectionChange?: (connected: boolean) => void
+  onBillingChange?: (billing: BillingUsage | null) => void
+  onBillingRefreshingChange?: (refreshing: boolean) => void
   onTaskPatch: (taskId: string, patch: TaskPatch) => void
   onNewTask: () => void
   onRenameTask: (taskId: string, title: string) => void
@@ -1058,6 +1377,24 @@ function ConversationPane({
     }
   }, [onTaskPatch, onWorkspaceData])
 
+  const refreshBilling = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) {
+      onBillingChange?.(null)
+      onBillingRefreshingChange?.(false)
+      return
+    }
+    onBillingRefreshingChange?.(true)
+    try {
+      const usage = await client.fetchBilling()
+      onBillingChange?.(usage)
+    } catch {
+      onBillingChange?.(null)
+    } finally {
+      onBillingRefreshingChange?.(false)
+    }
+  }, [onBillingChange, onBillingRefreshingChange])
+
   const disconnect = async (intentional = true) => {
     intentionalDisconnectRef.current = intentional
     if (reconnectTimerRef.current) {
@@ -1072,6 +1409,7 @@ function ConversationPane({
     }
     setConnected(false)
     onConnectionChange?.(false)
+    onBillingChange?.(null)
   }
 
   const connect = async () => {
@@ -1127,10 +1465,13 @@ function ConversationPane({
       } catch {
         // ignore
       }
+      // Live coding-credit usage for the sidebar meter (also best-effort).
+      // Interval effect also refreshes once `connected` flips true.
     } catch (error) {
       setConnectionError(error instanceof Error ? error.message : String(error))
       setConnected(false)
       onConnectionChange?.(false)
+      onBillingChange?.(null)
       if (clientRef.current) {
         await clientRef.current.disconnect().catch(() => undefined)
         clientRef.current = null
@@ -1145,6 +1486,25 @@ function ConversationPane({
     }
   }
   connectRef.current = connect
+
+  // Refresh billing while connected so the sidebar meter stays current.
+  useEffect(() => {
+    if (!connected) return
+    void refreshBilling()
+    const timer = window.setInterval(() => {
+      void refreshBilling()
+    }, BILLING_POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [connected, refreshBilling])
+
+  // Sidebar (and others) can request an immediate billing refresh.
+  useEffect(() => {
+    const onRefresh = () => {
+      void refreshBilling()
+    }
+    window.addEventListener('grok-forge-refresh-billing', onRefresh)
+    return () => window.removeEventListener('grok-forge-refresh-billing', onRefresh)
+  }, [refreshBilling])
 
   // One-shot open-to-connect per workspace / auto-connect enable. Retries go
   // through the backoff effect only — never re-fire on every connecting flip.
@@ -1314,19 +1674,26 @@ function ConversationPane({
     }
 
     const nextTitle = task.title === '准备开始' || task.messages.length === 0
-      ? titleFromPrompt(prompt)
+      ? (prompt.trim()
+        ? titleFromPrompt(prompt)
+        : (extraAttachments.length > 0 ? '图片附件' : '准备开始'))
       : task.title
     const submittedTaskId = task.id
     const sessionKey = task.sessionKey ?? task.id
     const generation = ++promptGenerationRef.current
     streamTaskIdRef.current = submittedTaskId
-    const composed = buildAttachmentPrompt(prompt, extraAttachments)
+    // Keep user-visible content as the typed prompt; images render from message.attachments.
+    const displayContent = prompt.trim()
     const willSend = Boolean(connected && clientRef.current)
 
     // Use appendMessage so concurrent live patches are not wiped by a stale messages snapshot.
     onTaskPatch(submittedTaskId, {
       title: nextTitle,
-      appendMessage: { role: 'user', content: composed },
+      appendMessage: {
+        role: 'user',
+        content: displayContent,
+        attachments: extraAttachments.length > 0 ? extraAttachments : undefined,
+      },
       liveMessage: '',
       liveThought: '',
       liveEvents: [],
@@ -1339,8 +1706,9 @@ function ConversationPane({
 
     if (willSend && clientRef.current) {
       streamOpenRef.current = true
+      const textForAgent = buildAttachmentPrompt(prompt, extraAttachments)
       const blocks = [
-        { type: 'text' as const, text: prompt },
+        { type: 'text' as const, text: textForAgent || prompt || '请查看附件。' },
         ...toResourceBlocks(extraAttachments),
       ]
       void clientRef.current.promptBlocks(blocks, sessionKey).then(() => {
@@ -1417,7 +1785,7 @@ function ConversationPane({
   const submit = (event?: FormEvent) => {
     event?.preventDefault()
     const prompt = input.trim()
-    if (!prompt) return
+    if (!prompt && attachments.length === 0) return
     if (prompt.startsWith('/')) {
       setInput('')
       if (!runSlashCommand(prompt)) {
@@ -1660,7 +2028,7 @@ function ConversationPane({
           highlightIndex={highlightMessageIndex}
           onHighlightConsumed={onHighlightConsumed}
         />
-        <ExecutionTimeline steps={task.planSteps} />
+        <ExecutionTimeline key={task.id} steps={task.planSteps} />
 
         {(task.liveMessage || task.liveThought || liveEvents.length > 0) && (
           <div className="agent-block live-response" aria-label="Grok 实时回复" role="region">
@@ -1668,13 +2036,15 @@ function ConversationPane({
             <div className="agent-content">
               <div className="agent-name">Grok <span>实时会话</span></div>
               {task.liveThought && (
-                <div className="live-thought" aria-label="Grok 思考中">
-                  <Sparkles size={13} />
-                  <MarkdownView source={task.liveThought} className="live-thought-text md-thought" />
-                </div>
+                <LiveThoughtPanel text={task.liveThought} hasReply={Boolean(task.liveMessage.trim())} />
               )}
               {liveEvents.map((event, index) => (
-                <div className={`live-event ${event.kind}`} key={`${event.kind}-${index}`}>
+                <div
+                  className={`live-event ${event.kind}`}
+                  key={event.kind === 'tool' && event.toolCallId
+                    ? `tool-${event.toolCallId}`
+                    : `${event.kind}-${index}`}
+                >
                   {event.kind === 'tool' ? (
                     <>
                       <Code2 size={13} />
@@ -1719,25 +2089,45 @@ function ConversationPane({
           )}
           {attachments.length > 0 && (
             <div className="attachment-row" aria-label="附件列表">
-              {attachments.map((file, index) => (
-                <button
-                  key={`${attachmentLabel(file)}-${index}`}
-                  type="button"
-                  className={`attachment-chip ${isDataImageAttachment(file) ? 'image' : ''}`}
-                  onClick={() => {
-                    const next = attachments.filter((_, i) => i !== index)
-                    setAttachments(next)
-                    onTaskPatch(task.id, { attachments: next, updatedAt: Date.now() })
-                  }}
-                  title={isDataImageAttachment(file) ? '粘贴的图片' : file}
-                >
-                  {isDataImageAttachment(file)
-                    ? <img src={file} alt="" className="attachment-thumb" />
-                    : <Paperclip size={11} />}
-                  {attachmentLabel(file)}
-                  <X size={11} />
-                </button>
-              ))}
+              {attachments.map((file, index) => {
+                const removeAttachment = () => {
+                  const next = attachments.filter((_, i) => i !== index)
+                  setAttachments(next)
+                  onTaskPatch(task.id, { attachments: next, updatedAt: Date.now() })
+                }
+                if (isDataImageAttachment(file)) {
+                  return (
+                    <div
+                      key={`${attachmentLabel(file)}-${index}`}
+                      className="attachment-image-card"
+                    >
+                      <img src={file} alt={attachmentLabel(file)} className="attachment-preview" />
+                      <button
+                        type="button"
+                        className="attachment-image-remove"
+                        aria-label={`移除 ${attachmentLabel(file)}`}
+                        title="移除图片"
+                        onClick={removeAttachment}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )
+                }
+                return (
+                  <button
+                    key={`${attachmentLabel(file)}-${index}`}
+                    type="button"
+                    className="attachment-chip"
+                    onClick={removeAttachment}
+                    title={file}
+                  >
+                    <Paperclip size={11} />
+                    {attachmentLabel(file)}
+                    <X size={11} />
+                  </button>
+                )
+              })}
             </div>
           )}
           <textarea
@@ -1783,7 +2173,7 @@ function ConversationPane({
               aria-label="发送任务"
               type="submit"
               disabled={
-                !input.trim()
+                (!input.trim() && attachments.length === 0)
                 || (task.status === 'running' && !input.trim().startsWith('/'))
               }
               title={
@@ -3286,7 +3676,7 @@ function Overlay({
             <div className="profile-section" aria-label="资料卡设置">
               <div className="mcp-heading">
                 <strong>资料卡</strong>
-                <small className="inline-hint">仅本地展示，非真实账单</small>
+                <small className="inline-hint">连接后自动拉取真实额度；以下为离线时的本地展示</small>
               </div>
               <label className="profile-field">
                 显示名称
@@ -3307,7 +3697,7 @@ function Overlay({
                 />
               </label>
               <label className="profile-field">
-                额度展示（%）
+                额度展示（% · 离线回退）
                 <input
                   aria-label="资料额度百分比"
                   type="number"
@@ -3769,6 +4159,8 @@ export default function App() {
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutId | null>(null)
   const [layout, setLayout] = useState<LayoutWidths>(() => loadLayoutWidths())
   const [profile, setProfile] = useState<WorkspaceProfile>(() => loadWorkspaceProfile())
+  const [billing, setBilling] = useState<BillingUsage | null>(null)
+  const [billingRefreshing, setBillingRefreshing] = useState(false)
   const [replayTaskId, setReplayTaskId] = useState<string | null>(null)
   const [highlightMessageIndex, setHighlightMessageIndex] = useState<number | null>(null)
   const refreshWorkspaceRef = useRef<() => void>(() => undefined)
@@ -3981,7 +4373,7 @@ export default function App() {
             ? patch.liveThought
             : task.liveThought,
         liveEvents: patch.appendLiveEvent !== undefined
-          ? [...task.liveEvents, patch.appendLiveEvent]
+          ? mergeLiveEvent(task.liveEvents, patch.appendLiveEvent)
           : patch.liveEvents !== undefined
             ? patch.liveEvents
             : task.liveEvents,
@@ -4222,6 +4614,12 @@ export default function App() {
         onOpenSessions={() => setOverlay('sessions')}
         onOpenSearch={() => setOverlay('search')}
         profile={profile}
+        billing={billing}
+        billingRefreshing={billingRefreshing}
+        onRefreshBilling={() => {
+          if (!connected) return
+          window.dispatchEvent(new CustomEvent('grok-forge-refresh-billing'))
+        }}
       />
       <ResizeHandle ariaLabel="调整侧边栏宽度" onDrag={onSidebarResize} />
       <ConversationPane
@@ -4233,7 +4631,12 @@ export default function App() {
         onWorkspacePath={updateWorkspacePath}
         onWorkspaceData={setWorkspace}
         onOpenReview={() => setReviewOpen(true)}
-        onConnectionChange={setConnected}
+        onConnectionChange={(value) => {
+          setConnected(value)
+          if (!value) setBillingRefreshing(false)
+        }}
+        onBillingChange={setBilling}
+        onBillingRefreshingChange={setBillingRefreshing}
         onTaskPatch={patchTask}
         onNewTask={createNewTask}
         onRenameTask={renameTask}

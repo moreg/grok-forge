@@ -85,9 +85,15 @@ describe('task helpers', () => {
   })
 
   it('normalizes legacy string messages and role objects', () => {
-    expect(normalizeMessages(['修复超时', { role: 'assistant', content: '已修复' }, { role: 'user', content: '' }])).toEqual([
+    expect(normalizeMessages([
+      '修复超时',
+      { role: 'assistant', content: '已修复' },
+      { role: 'user', content: '' },
+      { role: 'user', content: '', attachments: ['data:image/png;base64,abc'] },
+    ])).toEqual([
       { role: 'user', content: '修复超时' },
       { role: 'assistant', content: '已修复' },
+      { role: 'user', content: '', attachments: ['data:image/png;base64,abc'] },
     ])
   })
 
