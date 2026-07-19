@@ -1,0 +1,36 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#171B26"/>
+      <stop offset="1" stop-color="#07090C"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="180" y1="180" x2="860" y2="860" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#C9CFDA"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="520" y1="470" x2="850" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A89DFF"/>
+      <stop offset="1" stop-color="#7C6FF7"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B9B1FF"/>
+      <stop offset="1" stop-color="#8B7DFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板 -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="46" y="46" width="932" height="932" rx="186" stroke="#2A3038" stroke-width="22"/>
+
+  <!-- G 形锻环：开口朝右下，象征锻造中的工件 -->
+  <path d="M724 262C666 208 590 176 506 176C318 176 168 326 168 512C168 698 318 848 506 848C646 848 766 766 820 652"
+        stroke="url(#ring)" stroke-width="108" stroke-linecap="round"/>
+
+  <!-- 锻锤/箭头：紫色，穿入环心，象征构建与推进 -->
+  <path d="M512 496H848L726 618" stroke="url(#arrow)" stroke-width="108" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 锻造火花：沿环轨迹飞溅 -->
+  <path d="M268 240l14 34 34 14-34 14-14 34-14-34-34-14 34-14z" fill="url(#spark)"/>
+  <path d="M792 716l10 24 24 10-24 10-10 24-10-24-24-10 24-10z" fill="url(#spark)" opacity="0.9"/>
+  <circle cx="838" cy="330" r="18" fill="url(#spark)" opacity="0.75"/>
+</svg>

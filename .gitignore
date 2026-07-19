@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+.DS_Store
+apps/desktop/node_modules/
+apps/desktop/dist/
+apps/desktop/coverage/
+apps/desktop/test-results/
+apps/desktop/playwright-report/
+apps/desktop/*.tsbuildinfo
+apps/desktop/vite.config.js
+apps/desktop/vite.config.d.ts
+apps/desktop/src-tauri/target/
+.tools/
+# Root launch entry published by apps/desktop `npm run desktop:publish`
+/Grok Forge.exe
+/grok-forge-desktop.exe
+/dist/
+
+.learnings/
+
