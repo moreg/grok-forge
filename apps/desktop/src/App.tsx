@@ -20,6 +20,7 @@ import {
   Paperclip,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Settings,
   ShieldCheck,
@@ -518,13 +519,29 @@ function WorkspaceSidebar({
           <button aria-label="添加工作区" type="button" onClick={onSelectWorkspace}><Plus size={14} /></button>
         </div>
         <div className="workspace-card-row active">
-          <button className="workspace-card" aria-label="选择工作区" type="button" onClick={onSelectWorkspace}>
-            <div className="workspace-icon"><FolderGit2 size={16} /></div>
-            <div>
-              <strong>{workspaceName}</strong>
-              <small>{workspacePath || '尚未选择工作区'}</small>
+          {workspacePath ? (
+            <div className="workspace-card is-current" aria-label="当前工作区" title={workspacePath}>
+              <div className="workspace-icon"><FolderGit2 size={16} /></div>
+              <div>
+                <strong>{workspaceName}</strong>
+                <small>{workspacePath}</small>
+              </div>
             </div>
-          </button>
+          ) : (
+            <button
+              className="workspace-card"
+              aria-label="选择工作区"
+              type="button"
+              onClick={onSelectWorkspace}
+              title="选择一个本地文件夹作为工作区"
+            >
+              <div className="workspace-icon"><FolderGit2 size={16} /></div>
+              <div>
+                <strong>选择工作区</strong>
+                <small>点击选择本地文件夹</small>
+              </div>
+            </button>
+          )}
           <button
             type="button"
             className="workspace-collapse"
@@ -1231,6 +1248,7 @@ function ConversationPane({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(task.title)
   const [tagDraft, setTagDraft] = useState('')
+  const [tagEditorOpen, setTagEditorOpen] = useState(false)
   const [permissionQueue, setPermissionQueue] = useState<PendingPermission[]>([])
   const [reconnectAttempt, setReconnectAttempt] = useState(0)
   const [toastDismissed, setToastDismissed] = useState(false)
@@ -1268,6 +1286,7 @@ function ConversationPane({
     setRenaming(false)
     setTaskMenuOpen(false)
     setTagDraft('')
+    setTagEditorOpen(false)
     setAttachments(task.attachments ?? [])
     setInput('')
     setModeOpen(false)
@@ -1876,9 +1895,13 @@ function ConversationPane({
 
   const addTag = () => {
     const next = toggleTaskTag(task.tags, tagDraft)
-    if (next.length === (task.tags?.length ?? 0) && !tagDraft.trim()) return
+    if (next.length === (task.tags?.length ?? 0) && !tagDraft.trim()) {
+      setTagEditorOpen(false)
+      return
+    }
     onTaskPatch(task.id, { tags: next, updatedAt: Date.now() })
     setTagDraft('')
+    setTagEditorOpen(false)
   }
 
   const removeTag = (tag: string) => {
@@ -1893,11 +1916,13 @@ function ConversationPane({
       : connected
         ? '断开 Grok'
         : '连接 Grok'
+  const workspaceShortName = workspacePath.split(/[\\/]/).filter(Boolean).at(-1) || '请选择工作区'
+  const tags = task.tags ?? []
 
   return (
     <main className="conversation-pane">
       <header className="task-header">
-        <div>
+        <div className="task-header-main">
           {renaming ? (
             <form className="rename-form" onSubmit={(event) => { event.preventDefault(); commitRename() }}>
               <input aria-label="重命名任务" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} autoFocus onBlur={commitRename} />
@@ -1906,45 +1931,73 @@ function ConversationPane({
             <h1>{task.title}</h1>
           )}
           <div className="task-meta">
-            <GitBranch size={12} />
-            <span>{branch || '无分支'}</span>
-            <span className="meta-sep">·</span>
-            <span>{workspacePath || '请选择工作区'}</span>
-            <span className="meta-sep">·</span>
-            <span aria-label="当前模型">{modelLabel(preferredModel)}</span>
-            <span className="task-status-pill">{statusLabel(task.status)}</span>
-          </div>
-          <div className="task-tag-editor" aria-label="任务标签">
-            {(task.tags ?? []).map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                className="tag-chip"
-                aria-label={`移除标签 ${tag}`}
-                onClick={() => removeTag(tag)}
-                title="点击移除标签"
-              >
-                #{tag} <X size={10} />
-              </button>
-            ))}
-            <form
-              className="tag-add-form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                addTag()
-              }}
-            >
-              <input
-                aria-label="添加任务标签"
-                placeholder="添加标签…"
-                value={tagDraft}
-                onChange={(event) => setTagDraft(event.target.value)}
-              />
-              <button type="submit" aria-label="确认添加标签">添加</button>
-            </form>
+            <span className="task-meta-item" title={branch || '无分支'}>
+              <GitBranch size={11} aria-hidden="true" />
+              <span>{branch || '无分支'}</span>
+            </span>
+            <span className="meta-sep" aria-hidden="true">·</span>
+            <span className="task-meta-item task-meta-path" title={workspacePath || '请选择工作区'}>
+              {workspaceShortName}
+            </span>
+            <span className="meta-sep" aria-hidden="true">·</span>
+            <span className="task-meta-item" aria-label="当前模型">{modelLabel(preferredModel)}</span>
+            {(tags.length > 0 || tagEditorOpen) && (
+              <>
+                <span className="meta-sep" aria-hidden="true">·</span>
+                <div className="task-tag-editor" aria-label="任务标签">
+                  {tags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className="tag-chip"
+                      aria-label={`移除标签 ${tag}`}
+                      onClick={() => removeTag(tag)}
+                      title="点击移除标签"
+                    >
+                      #{tag}
+                      <X size={9} aria-hidden="true" />
+                    </button>
+                  ))}
+                  {tagEditorOpen ? (
+                    <form
+                      className="tag-add-form"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        addTag()
+                      }}
+                    >
+                      <input
+                        aria-label="添加任务标签"
+                        placeholder="标签名"
+                        value={tagDraft}
+                        onChange={(event) => setTagDraft(event.target.value)}
+                        onBlur={() => {
+                          if (!tagDraft.trim()) setTagEditorOpen(false)
+                        }}
+                        autoFocus
+                      />
+                      <button type="submit" aria-label="确认添加标签">添加</button>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className="tag-add-trigger"
+                      aria-label="添加任务标签"
+                      onClick={() => setTagEditorOpen(true)}
+                    >
+                      <Plus size={10} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
         <div className="header-actions">
+          <span className={`task-status-pill status-${task.status}`} title={`任务状态：${statusLabel(task.status)}`}>
+            <span className="task-status-dot" aria-hidden="true" />
+            {statusLabel(task.status)}
+          </span>
           {task.status === 'running' && connected && (
             <button className="stop-button" type="button" aria-label="停止任务" onClick={() => void stopTask()}>
               <Square size={12} fill="currentColor" /> 停止
@@ -1967,11 +2020,21 @@ function ConversationPane({
           )}
           <div className="task-menu-wrap">
             <button className="icon-button" aria-label="任务选项" type="button" aria-expanded={taskMenuOpen} onClick={() => setTaskMenuOpen((open) => !open)}>
-              <MoreHorizontal size={18} />
+              <MoreHorizontal size={16} />
             </button>
             {taskMenuOpen && (
               <div className="task-menu" role="menu" aria-label="任务选项菜单">
                 <button type="button" role="menuitem" onClick={() => { setRenaming(true); setTaskMenuOpen(false) }}>重命名任务</button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setTagEditorOpen(true)
+                    setTaskMenuOpen(false)
+                  }}
+                >
+                  添加标签
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -1998,7 +2061,7 @@ function ConversationPane({
               </div>
             )}
           </div>
-          <button className="icon-button" aria-label="打开审阅面板" type="button" onClick={onOpenReview}><PanelRightOpen size={18} /></button>
+          <button className="icon-button" aria-label="打开审阅面板" type="button" onClick={onOpenReview}><PanelRightOpen size={16} /></button>
         </div>
       </header>
 
@@ -2777,71 +2840,98 @@ function ReviewPane({
 
       {activeTab === 'diff' ? (
         <>
-          <div className="review-summary">
-            <div>
-              <strong>待审阅的改动</strong>
-              <small>
-                {workspace
-                  ? `${files.length} 个文件已修改${workspace.branch ? ` · ${workspace.branch}` : ''}${
-                    workspace.gitSource === 'local' ? ' · 本地 git' : ''
-                  }`
-                  : '连接 Grok 以读取实时变更'}
-              </small>
+          <div className={`review-summary ${hasChanges ? '' : 'is-empty'}`.trim()}>
+            <div className="review-summary-main">
+              <div className="review-summary-text">
+                <strong>{hasChanges ? '待审阅的改动' : '变更审阅'}</strong>
+                <small>
+                  {workspace
+                    ? hasChanges
+                      ? `${files.length} 个文件已修改${workspace.branch ? ` · ${workspace.branch}` : ''}${
+                        workspace.gitSource === 'local' ? ' · 本地 git' : ''
+                      }`
+                      : workspace.gitAvailable
+                        ? `工作区干净${workspace.branch ? ` · ${workspace.branch}` : ''}${
+                          workspace.gitSource === 'local' ? ' · 本地 git' : ''
+                        }`
+                        : 'Git 状态不可用'
+                    : '连接 Grok 后显示实时 Git 变更'}
+                </small>
+              </div>
+              {hasChanges && (
+                <div className="summary-count" aria-label="变更统计">
+                  <span>+{ignoreWhitespace ? visibleChangeStats.additions : additions}</span>
+                  <del>−{ignoreWhitespace ? visibleChangeStats.deletions : deletions}</del>
+                </div>
+              )}
             </div>
-            <div className="review-view-toggles" role="group" aria-label="Diff 视图">
-              <button
-                type="button"
-                className={diffLayout === 'unified' ? 'active' : ''}
-                aria-pressed={diffLayout === 'unified'}
-                aria-label="统一 diff 视图"
-                onClick={() => setDiffLayout('unified')}
-              >
-                统一
-              </button>
-              <button
-                type="button"
-                className={diffLayout === 'split' ? 'active' : ''}
-                aria-pressed={diffLayout === 'split'}
-                aria-label="并排 diff 视图"
-                onClick={() => setDiffLayout('split')}
-              >
-                并排
-              </button>
-              <button
-                type="button"
-                className={ignoreWhitespace ? 'active' : ''}
-                aria-pressed={ignoreWhitespace}
-                aria-label="忽略空白差异"
-                onClick={() => setIgnoreWhitespace((value) => !value)}
-              >
-                忽略空白
-              </button>
-              <button
-                type="button"
-                className={showAllHunks ? 'active' : ''}
-                aria-pressed={showAllHunks}
-                aria-label="展开全部片段"
-                onClick={() => setShowAllHunks((value) => !value)}
-              >
-                {showAllHunks ? '按片段' : '展开全部'}
-              </button>
-              <button
-                type="button"
-                className={collapseUnchanged ? 'active' : ''}
-                aria-pressed={collapseUnchanged}
-                aria-label="折叠未改动上下文"
-                onClick={() => {
-                  setCollapseUnchanged((value) => !value)
-                  setExpandedFolds([])
-                }}
-              >
-                折叠上下文
-              </button>
-            </div>
-            <div className="summary-count">
-              <span>+{ignoreWhitespace ? visibleChangeStats.additions : additions}</span>
-              <del>−{ignoreWhitespace ? visibleChangeStats.deletions : deletions}</del>
-            </div>
+            {hasChanges && (
+              <div className="review-toolbar">
+                <div className="review-layout-toggle" role="group" aria-label="Diff 布局">
+                  <button
+                    type="button"
+                    className={diffLayout === 'unified' ? 'active' : ''}
+                    aria-pressed={diffLayout === 'unified'}
+                    aria-label="统一 diff 视图"
+                    onClick={() => setDiffLayout('unified')}
+                  >
+                    统一
+                  </button>
+                  <button
+                    type="button"
+                    className={diffLayout === 'split' ? 'active' : ''}
+                    aria-pressed={diffLayout === 'split'}
+                    aria-label="并排 diff 视图"
+                    onClick={() => setDiffLayout('split')}
+                  >
+                    并排
+                  </button>
+                </div>
+                <div className="review-view-toggles" role="group" aria-label="Diff 视图">
+                  <button
+                    type="button"
+                    className={ignoreWhitespace ? 'active' : ''}
+                    aria-pressed={ignoreWhitespace}
+                    aria-label="忽略空白差异"
+                    onClick={() => setIgnoreWhitespace((value) => !value)}
+                  >
+                    忽略空白
+                  </button>
+                  <button
+                    type="button"
+                    className={showAllHunks ? 'active' : ''}
+                    aria-pressed={showAllHunks}
+                    aria-label="展开全部片段"
+                    onClick={() => setShowAllHunks((value) => !value)}
+                  >
+                    {showAllHunks ? '按片段' : '展开全部'}
+                  </button>
+                  <button
+                    type="button"
+                    className={collapseUnchanged ? 'active' : ''}
+                    aria-pressed={collapseUnchanged}
+                    aria-label="折叠未改动上下文"
+                    onClick={() => {
+                      setCollapseUnchanged((value) => !value)
+                      setExpandedFolds([])
+                    }}
+                  >
+                    折叠上下文
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="review-refresh"
+                  aria-label="刷新变更"
+                  title="重新读取工作区 Git 状态"
+                  onClick={() => onRefreshWorkspace?.()}
+                  disabled={!workspace}
+                >
+                  <RefreshCw size={12} aria-hidden="true" />
+                  刷新
+                </button>
+              </div>
+            )}
           </div>
           {files.length > 0 && (
             <div className="decision-checklist" aria-label="文件决策清单">
@@ -2891,29 +2981,31 @@ function ReviewPane({
               )}
             </div>
           )}
-          <div className="file-list">
-            {files.map((file) => (
-              <div key={file.path} className={`file-row ${selected?.path === file.path ? 'active' : ''}`}>
-                <button className="file-row-main" onClick={() => setSelectedPath(file.path)} aria-label={`查看 ${file.shortName}`} type="button">
-                  <FileCode2 size={14} />
-                  <span>{file.shortName}</span>
-                  {acceptedPaths.includes(file.path) && <em className="file-tag accept">已接受</em>}
-                  {rejectedPaths.includes(file.path) && <em className="file-tag reject">已拒绝</em>}
-                  <em>+{file.additions}</em>
-                  {file.deletions > 0 && <del>−{file.deletions}</del>}
-                </button>
-                <button
-                  type="button"
-                  className={`file-pin ${pinnedPaths.includes(file.path) ? 'active' : ''}`}
-                  aria-label={pinnedPaths.includes(file.path) ? `取消固定 ${file.shortName}` : `固定对比 ${file.shortName}`}
-                  aria-pressed={pinnedPaths.includes(file.path)}
-                  onClick={() => setPinnedPaths((current) => togglePinnedPath(current, file.path))}
-                >
-                  钉
-                </button>
-              </div>
-            ))}
-          </div>
+          {hasChanges && (
+            <div className="file-list" aria-label="变更文件列表">
+              {files.map((file) => (
+                <div key={file.path} className={`file-row ${selected?.path === file.path ? 'active' : ''}`}>
+                  <button className="file-row-main" onClick={() => setSelectedPath(file.path)} aria-label={`查看 ${file.shortName}`} type="button">
+                    <FileCode2 size={14} />
+                    <span>{file.shortName}</span>
+                    {acceptedPaths.includes(file.path) && <em className="file-tag accept">已接受</em>}
+                    {rejectedPaths.includes(file.path) && <em className="file-tag reject">已拒绝</em>}
+                    <em>+{file.additions}</em>
+                    {file.deletions > 0 && <del>−{file.deletions}</del>}
+                  </button>
+                  <button
+                    type="button"
+                    className={`file-pin ${pinnedPaths.includes(file.path) ? 'active' : ''}`}
+                    aria-label={pinnedPaths.includes(file.path) ? `取消固定 ${file.shortName}` : `固定对比 ${file.shortName}`}
+                    aria-pressed={pinnedPaths.includes(file.path)}
+                    onClick={() => setPinnedPaths((current) => togglePinnedPath(current, file.path))}
+                  >
+                    钉
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {pinnedFiles.length > 0 && (
             <div className="multi-diff" aria-label="多文件对比">
               <div className="multi-diff-heading">
@@ -3119,24 +3211,49 @@ function ReviewPane({
               )}
             </>
           ) : (
-            <div className="diff-view empty-review">
-              {workspace
-                ? workspace.gitAvailable
-                  ? '暂无 Git 变更。'
-                  : '无法读取 Git 变更：运行时缺少 x.ai/git/*，且本地 git 回退不可用（请确认工作区是 Git 仓库并已安装 git）。'
-                : '连接 Grok 后将在这里显示实时 Git 变更。'}
+            <div className="empty-review" aria-label="空审阅状态">
+              <div className="empty-review-icon" aria-hidden="true">
+                <FileDiff size={22} />
+              </div>
+              <strong>
+                {workspace
+                  ? workspace.gitAvailable
+                    ? '暂无 Git 变更'
+                    : '无法读取 Git 变更'
+                  : '尚未连接'}
+              </strong>
+              <span>
+                {workspace
+                  ? workspace.gitAvailable
+                    ? '当前工作区没有未提交的修改。Grok 改动文件后会自动出现在这里。'
+                    : '运行时缺少 x.ai/git/*，且本地 git 回退不可用。请确认工作区是 Git 仓库并已安装 git。'
+                  : '连接 Grok 后将在这里显示实时 Git 变更。'}
+              </span>
+              {workspace && (
+                <button
+                  type="button"
+                  className="empty-review-action"
+                  aria-label="刷新变更"
+                  onClick={() => onRefreshWorkspace?.()}
+                >
+                  <RefreshCw size={13} aria-hidden="true" />
+                  刷新变更
+                </button>
+              )}
             </div>
           )}
-          <div className="review-footer">
+          <div className={`review-footer ${hasChanges ? '' : 'is-empty'}`.trim()}>
             <div className={`review-state ${reviewState === 'confirmed' ? 'applied' : ''}`} role={reviewState === 'revert-help' || reviewState === 'confirmed' ? 'status' : undefined}>
               {reviewState === 'confirmed' ? <Check size={14} /> : <ShieldCheck size={14} />}
               {reviewState === 'confirmed'
                 ? '已确认并暂存'
                 : reviewState === 'revert-help'
                   ? (connected ? '已处理撤销（本地优先，失败则请 Grok）' : '已尝试本地还原')
-                  : '等待你的审阅'}
+                  : hasChanges
+                    ? '等待你的审阅'
+                    : '无待审改动'}
             </div>
-            <div>
+            <div className="review-footer-actions">
               <button
                 className="reject-button"
                 disabled={!hasChanges || reviewState === 'confirmed'}

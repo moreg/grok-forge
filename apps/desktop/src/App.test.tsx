@@ -134,7 +134,7 @@ describe('Grok Forge workspace', () => {
     render(<App />)
     expect(await screen.findByRole('button', { name: '浏览器预览' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /api\.ts/ })).not.toBeInTheDocument()
-    expect(screen.getByText('连接 Grok 后将在这里显示实时 Git 变更。')).toBeInTheDocument()
+    expect(screen.getByLabelText('空审阅状态')).toHaveTextContent('连接 Grok 后将在这里显示实时 Git 变更。')
   })
 
   it('auto-connects on open when native workspace is ready', async () => {
@@ -244,9 +244,13 @@ describe('Grok Forge workspace', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(await screen.findByRole('button', { name: '选择工作区' }))
+    // Current workspace is not a folder-picker trigger; use the + action instead.
+    expect(await screen.findByLabelText('当前工作区')).toHaveTextContent('old')
+    await user.click(screen.getByRole('button', { name: '添加工作区' }))
     expect(bridge.selectWorkspace).toHaveBeenCalledWith('C:\\old')
-    expect(screen.getAllByText('D:\\projects\\next')).toHaveLength(2)
+    // Sidebar shows full path; header meta shows the short folder name.
+    expect(screen.getByText('D:\\projects\\next')).toBeInTheDocument()
+    expect(screen.getAllByText('next').length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: '连接 Grok' }))
     expect(acpMocks.connect).toHaveBeenCalledWith('D:\\projects\\next', expect.any(String), expect.any(Array), undefined)
   })
@@ -1060,6 +1064,8 @@ describe('Grok Forge workspace', () => {
 
     await user.type(screen.getByRole('textbox', { name: '任务输入' }), '标签与搜索任务内容')
     await user.click(screen.getByRole('button', { name: '发送任务' }))
+    await user.click(screen.getByRole('button', { name: '任务选项' }))
+    await user.click(screen.getByRole('menuitem', { name: '添加标签' }))
     await user.type(screen.getByRole('textbox', { name: '添加任务标签' }), 'feature')
     await user.click(screen.getByRole('button', { name: '确认添加标签' }))
     expect(screen.getByLabelText('任务标签')).toHaveTextContent('#feature')
