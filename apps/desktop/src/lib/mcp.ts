@@ -53,6 +53,63 @@ export function createEmptyMcpServer(): McpServerConfig {
   return { name: '', command: '', args: [], env: [] }
 }
 
+export type McpServerTemplate = McpServerConfig & {
+  id: string
+  description: string
+}
+
+/** One-click MCP templates for the capability panel / settings. */
+export const MCP_TEMPLATES: McpServerTemplate[] = [
+  {
+    id: 'filesystem',
+    name: 'filesystem',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
+    description: '读写当前工作区文件（stdio）',
+  },
+  {
+    id: 'memory',
+    name: 'memory',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-memory'],
+    description: '本地知识图谱记忆',
+  },
+  {
+    id: 'github',
+    name: 'github',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+    env: [{ name: 'GITHUB_PERSONAL_ACCESS_TOKEN', value: '' }],
+    description: 'GitHub issues / PR（需填写 token）',
+  },
+  {
+    id: 'fetch',
+    name: 'fetch',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-fetch'],
+    description: 'HTTP 抓取网页内容',
+  },
+]
+
+/** Merge a template into the list; skips if the same name already exists. */
+export function applyMcpTemplate(
+  servers: McpServerConfig[],
+  template: McpServerTemplate | McpServerConfig,
+): { servers: McpServerConfig[]; added: boolean } {
+  const name = template.name.trim()
+  if (!name) return { servers, added: false }
+  if (servers.some((server) => server.name.trim().toLowerCase() === name.toLowerCase())) {
+    return { servers, added: false }
+  }
+  const next: McpServerConfig = {
+    name,
+    command: template.command,
+    args: [...(template.args ?? [])],
+    env: template.env ? template.env.map((entry) => ({ ...entry })) : [],
+  }
+  return { servers: [...servers, next], added: true }
+}
+
 /** Serialize env pairs for a textarea (`NAME=value` per line). */
 export function formatEnvInput(env: Array<{ name: string; value: string }> | undefined) {
   return (env ?? []).map((entry) => `${entry.name}=${entry.value}`).join('\n')

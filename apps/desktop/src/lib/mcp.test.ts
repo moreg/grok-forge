@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  MCP_TEMPLATES,
+  applyMcpTemplate,
   createEmptyMcpServer,
   formatArgsInput,
   formatEnvInput,
@@ -61,5 +63,15 @@ describe('mcp helpers', () => {
     expect(loadMcpServers()).toEqual([
       { name: 'fs', command: 'npx', args: ['--stdio', '-y', 'pkg'], env: [{ name: 'OK', value: '1' }] },
     ])
+  })
+
+  it('applies MCP templates without duplicating names', () => {
+    expect(MCP_TEMPLATES.length).toBeGreaterThan(0)
+    const first = applyMcpTemplate([], MCP_TEMPLATES[0])
+    expect(first.added).toBe(true)
+    expect(first.servers).toHaveLength(1)
+    const second = applyMcpTemplate(first.servers, MCP_TEMPLATES[0])
+    expect(second.added).toBe(false)
+    expect(second.servers).toHaveLength(1)
   })
 })

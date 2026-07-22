@@ -40,7 +40,8 @@ const NOTIFY_KEY = 'grok-forge-desktop-notifications'
 const LAYOUT_KEY = 'grok-forge-layout-widths'
 const PROFILE_KEY = 'grok-forge-profile'
 const EXPORT_HISTORY_KEY = 'grok-forge-export-history'
-const MAX_EXPORT_HISTORY = 12
+/** Keep export history short — metadata always; body only when tiny. */
+const MAX_EXPORT_HISTORY = 8
 
 export type LayoutWidths = {
   sidebar: number
@@ -363,8 +364,8 @@ export type ExportHistoryKind =
   | 'search-hits-copy'
   | 'stats'
 
-/** Cap cached export bodies so localStorage stays within a safe budget (~12 entries). */
-export const MAX_EXPORT_CONTENT_CHARS = 200_000
+/** Cap cached export bodies so localStorage stays within a safe budget (~8 entries). */
+export const MAX_EXPORT_CONTENT_CHARS = 32_000
 
 export type ExportHistoryEntry = {
   id: string

@@ -4,6 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as bridge from './lib/desktopBridge'
 import App from './App'
 
+/** Wait one macrotask so rAF-mapped stream token batches flush in jsdom. */
+async function flushStreamBatch() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0)
+    })
+  })
+}
+
 const acpMocks = vi.hoisted(() => ({
   connect: vi.fn().mockResolvedValue({ sessionId: 'session-42' }),
   prompt: vi.fn().mockResolvedValue({ stopReason: 'end_turn' }),
@@ -14,6 +23,8 @@ const acpMocks = vi.hoisted(() => ({
   cancel: vi.fn().mockResolvedValue(undefined),
   respondPermission: vi.fn().mockResolvedValue(undefined),
   onEvent: vi.fn(),
+  setAccountId: vi.fn(),
+  setTaskAccountId: vi.fn(),
   setMcpServers: vi.fn(),
   setPreferredModel: vi.fn(),
   setSessionModel: vi.fn().mockResolvedValue({}),
@@ -22,6 +33,34 @@ const acpMocks = vi.hoisted(() => ({
 
 beforeEach(() => {
   localStorage.clear()
+  localStorage.setItem('grok-forge-accounts', JSON.stringify({
+    accounts: [{
+      id: 'acc-test-1234',
+      name: '测试账号',
+      source: 'import',
+      renewal: 'unknown',
+      authStatus: 'valid',
+      createdAt: 1,
+      lastUsedAt: 1,
+    }],
+    currentAccountId: 'acc-test-1234',
+  }))
+  localStorage.setItem('grok-forge-tasks', JSON.stringify([{
+    id: 'task-test-default',
+    accountId: 'acc-test-1234',
+    title: '准备开始',
+    messages: [],
+    liveMessage: '',
+    liveThought: '',
+    liveEvents: [],
+    planSteps: [],
+    status: 'idle',
+    updatedAt: 1,
+    sessionKey: 'task-test-default',
+    attachments: [],
+    tags: [],
+  }]))
+  localStorage.setItem('grok-forge-active-task', 'task-test-default')
   // Opt out of open-to-connect in most tests so they keep an explicit “连接 Grok” step.
   // Dedicated auto-connect coverage clears this key or sets it to '1'.
   localStorage.setItem('grok-forge-auto-reconnect', '0')
@@ -59,6 +98,10 @@ beforeEach(() => {
     succeeded: paths.length,
     failed: 0,
   }))
+  vi.mocked(bridge.gitCommit).mockImplementation(async (message: string) => ({
+    ok: true,
+    message,
+  }))
   vi.mocked(bridge.readTextFile).mockResolvedValue('keep\nnew\ntail\n')
   vi.mocked(bridge.writeTextFile).mockResolvedValue(undefined)
   vi.mocked(bridge.terminalList).mockResolvedValue([])
@@ -87,6 +130,10 @@ vi.mock('./lib/desktopBridge', async (importOriginal) => {
       succeeded: paths.length,
       failed: 0,
     })),
+    gitCommit: vi.fn().mockImplementation(async (message: string) => ({
+      ok: true,
+      message,
+    })),
     readTextFile: vi.fn().mockResolvedValue('keep\nnew\ntail\n'),
     writeTextFile: vi.fn().mockResolvedValue(undefined),
     terminalList: vi.fn().mockResolvedValue([]),
@@ -100,6 +147,7 @@ vi.mock('./lib/desktopBridge', async (importOriginal) => {
 
 vi.mock('./lib/grokAcpClient', () => ({
   BILLING_POLL_INTERVAL_MS: 120_000,
+  GrokRequestError: class GrokRequestError extends Error {},
   GrokAcpClient: class MockGrokAcpClient {
     connect = acpMocks.connect
     prompt = acpMocks.prompt
@@ -110,6 +158,8 @@ vi.mock('./lib/grokAcpClient', () => ({
     cancel = acpMocks.cancel
     respondPermission = acpMocks.respondPermission
     onEvent = acpMocks.onEvent
+    setAccountId = acpMocks.setAccountId
+    setTaskAccountId = acpMocks.setTaskAccountId
     setMcpServers = acpMocks.setMcpServers
     setPreferredModel = acpMocks.setPreferredModel
     setSessionModel = acpMocks.setSessionModel
@@ -128,6 +178,9 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByRole('region', { name: '变更审阅' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /终端/ })).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '任务输入' })).toBeInTheDocument()
+    // Context meter is always visible (local estimate until agent reports usage_update).
+    expect(screen.getByRole('meter', { name: '当前对话上下文容量' })).toBeInTheDocument()
+    expect(screen.getByRole('meter', { name: '当前对话上下文容量' })).toHaveTextContent('估算')
   })
 
   it('makes the browser-only runtime state explicit', async () => {
@@ -151,6 +204,54 @@ describe('Grok Forge workspace', () => {
     expect(acpMocks.connect).toHaveBeenCalledWith('E:\\trea\\grok桌面版', expect.any(String), expect.any(Array), undefined)
     expect(acpMocks.loadWorkspaceData).toHaveBeenCalled()
     expect(screen.getByText(/已连接 Grok，直接输入你的第一个任务/)).toBeInTheDocument()
+  })
+
+  it('does not connect an unowned task until it is bound', async () => {
+    localStorage.removeItem('grok-forge-auto-reconnect')
+    localStorage.setItem('grok-forge-accounts', JSON.stringify({
+      accounts: [{
+        id: 'acc-test-1234',
+        name: '测试账号',
+        source: 'import',
+        renewal: 'unknown',
+        authStatus: 'valid',
+        createdAt: 1,
+        lastUsedAt: 1,
+      }],
+      currentAccountId: 'acc-test-1234',
+    }))
+    localStorage.setItem('grok-forge-tasks', JSON.stringify([{
+      id: 'task-test-default',
+      accountId: null,
+      title: '准备开始',
+      messages: [],
+      liveMessage: '',
+      liveThought: '',
+      liveEvents: [],
+      planSteps: [],
+      status: 'idle',
+      updatedAt: 1,
+      sessionKey: 'task-test-default',
+      attachments: [],
+      tags: [],
+    }]))
+    vi.mocked(bridge.getBackendStatus).mockResolvedValue({
+      mode: 'native',
+      installed: true,
+      version: 'grok 1.0.0',
+      workspacePath: 'E:\\trea\\grok桌面版',
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await flushStreamBatch()
+    expect(acpMocks.connect).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '切换到任务 准备开始' }))
+    await screen.findByRole('button', { name: '断开 Grok' })
+    expect(acpMocks.connect).toHaveBeenCalled()
+    confirm.mockRestore()
   })
 
   it('connects the installed Grok runtime from a native window', async () => {
@@ -186,6 +287,7 @@ describe('Grok Forge workspace', () => {
       receive({ kind: 'plan', entries: [{ text: '完成' }] })
       receive({ kind: 'message', text: '真实回复' })
     })
+    await flushStreamBatch()
     const live = screen.getByRole('region', { name: 'Grok 实时回复' })
     expect(live).toHaveTextContent('The user just sent')
     expect(live).toHaveTextContent('真实回复')
@@ -196,6 +298,14 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByRole('button', { name: '展开思考过程' })).toHaveAttribute('aria-expanded', 'false')
     await user.click(screen.getByRole('button', { name: '展开思考过程' }))
     expect(screen.getByRole('button', { name: '折叠思考过程' })).toHaveAttribute('aria-expanded', 'true')
+
+    act(() => {
+      receive({ kind: 'usage', used: 53_000, size: 200_000 })
+    })
+    const meter = screen.getByRole('meter', { name: '当前对话上下文容量' })
+    expect(meter).toHaveTextContent('实时')
+    expect(meter).toHaveTextContent('53k')
+    expect(meter).toHaveTextContent('200k')
 
     await act(async () => {
       finishPrompt?.()
@@ -224,6 +334,7 @@ describe('Grok Forge workspace', () => {
       receive({ kind: 'plan', entries: [{ text: '总结' }] })
       receive({ kind: 'message', text: '改动已总结' })
     })
+    await flushStreamBatch()
     expect(screen.getByRole('region', { name: 'Grok 实时回复' })).toHaveTextContent('改动已总结')
     expect(screen.getByLabelText('Grok 思考中')).toHaveTextContent('整理要点')
 
@@ -234,6 +345,47 @@ describe('Grok Forge workspace', () => {
     // Finalize must clear live shell even when tool/plan events were streamed.
     expect(screen.queryByRole('region', { name: 'Grok 实时回复' })).not.toBeInTheDocument()
     expect(screen.getByLabelText('Grok 回复')).toHaveTextContent('改动已总结')
+  })
+
+  it('collapses the live tool list so long chains do not flood the chat', async () => {
+    let finishPrompt: (() => void) | undefined
+    acpMocks.promptBlocks.mockImplementationOnce(() => new Promise((resolve) => {
+      finishPrompt = () => resolve({ stopReason: 'end_turn' })
+    }))
+    vi.mocked(bridge.getBackendStatus).mockResolvedValueOnce({
+      mode: 'native', installed: true, version: 'grok 1.0.0', workspacePath: 'C:\\repo',
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: '连接 Grok' }))
+    await user.type(screen.getByRole('textbox', { name: '任务输入' }), '跑一串工具')
+    await user.click(screen.getByRole('button', { name: '发送任务' }))
+    const receive = acpMocks.onEvent.mock.calls.at(-1)?.[0]
+    act(() => {
+      receive({ kind: 'tool', toolCallId: 't1', title: 'Grok tool', detail: 'Failed to read file', status: 'failed' })
+      receive({ kind: 'tool', toolCallId: 't2', title: 'Grok tool', detail: 'found 36 matches', status: 'completed' })
+      receive({ kind: 'tool', toolCallId: 't3', title: 'Grok tool', detail: 'found 63 matches', status: 'completed' })
+      receive({ kind: 'message', text: '工具链路结束' })
+    })
+    await flushStreamBatch()
+
+    const toolsRegion = screen.getByRole('region', { name: '工具调用' })
+    expect(toolsRegion).toBeInTheDocument()
+    // Collapsed by default when reply starts — detail rows stay out of the stream.
+    expect(screen.getByRole('button', { name: '展开工具调用' })).toHaveAttribute('aria-expanded', 'false')
+    expect(toolsRegion).toHaveTextContent('2/3 完成 · 1 失败')
+    expect(toolsRegion).not.toHaveTextContent('found 36 matches')
+
+    await user.click(screen.getByRole('button', { name: '展开工具调用' }))
+    expect(screen.getByRole('button', { name: '折叠工具调用' })).toHaveAttribute('aria-expanded', 'true')
+    expect(toolsRegion).toHaveTextContent('found 36 matches')
+    expect(toolsRegion).toHaveTextContent('Failed to read file')
+
+    await act(async () => {
+      finishPrompt?.()
+      await Promise.resolve()
+    })
   })
 
   it('lets the user choose a workspace before connecting', async () => {
@@ -387,18 +539,21 @@ describe('Grok Forge workspace', () => {
       receive({ kind: 'tool', title: '编辑文件', status: 'completed' })
       receive({ kind: 'message', text: '已完成修改' })
     })
+    await flushStreamBatch()
 
+    // Timeline stays collapsed by default so plan/tool noise does not flood the chat.
+    expect(screen.getByRole('button', { name: '展开执行过程' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('region', { name: '执行时间线' })).not.toHaveTextContent('分析链路')
+    expect(screen.getByRole('button', { name: '查看改动摘要' })).toHaveTextContent('1 个文件')
+
+    await user.click(screen.getByRole('button', { name: '展开执行过程' }))
+    expect(screen.getByRole('button', { name: '折叠执行过程' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('region', { name: '执行时间线' })).toHaveTextContent('分析链路')
     expect(screen.getByRole('region', { name: '执行时间线' })).toHaveTextContent('写入修复')
-    expect(screen.getByRole('button', { name: '折叠执行过程' })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByRole('button', { name: '查看改动摘要' })).toHaveTextContent('1 个文件')
 
     await user.click(screen.getByRole('button', { name: '折叠执行过程' }))
     expect(screen.getByRole('button', { name: '展开执行过程' })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByRole('region', { name: '执行时间线' })).not.toHaveTextContent('分析链路')
-
-    await user.click(screen.getByRole('button', { name: '展开执行过程' }))
-    expect(screen.getByRole('region', { name: '执行时间线' })).toHaveTextContent('分析链路')
 
     await user.click(screen.getByRole('button', { name: '切换审批模式' }))
     await user.click(screen.getByRole('menuitemradio', { name: /观察模式/ }))
@@ -411,7 +566,7 @@ describe('Grok Forge workspace', () => {
     })
   })
 
-  it('auto-collapses the execution timeline when all steps finish', async () => {
+  it('keeps the execution timeline collapsed while steps run and after they finish', async () => {
     let finishPrompt: (() => void) | undefined
     acpMocks.promptBlocks.mockImplementationOnce(() => new Promise((resolve) => {
       finishPrompt = () => resolve({ stopReason: 'end_turn' })
@@ -435,7 +590,9 @@ describe('Grok Forge workspace', () => {
         ],
       })
     })
-    expect(screen.getByRole('button', { name: '折叠执行过程' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '展开执行过程' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('region', { name: '执行时间线' })).toHaveTextContent('步骤二')
+    expect(screen.getByRole('region', { name: '执行时间线' })).not.toHaveTextContent('步骤一')
 
     act(() => {
       receive({
@@ -536,8 +693,9 @@ describe('Grok Forge workspace', () => {
     expect(screen.getByRole('dialog', { name: '设置' })).toHaveTextContent('浏览器预览')
     await user.click(screen.getByRole('button', { name: '关闭面板' }))
 
-    await user.click(screen.getByRole('button', { name: '扩展中心' }))
-    expect(screen.getByRole('dialog', { name: '扩展中心' })).toHaveTextContent('x.ai/git/*')
+    await user.click(screen.getByRole('button', { name: '能力诊断' }))
+    expect(screen.getByRole('dialog', { name: '能力诊断' })).toHaveTextContent('x.ai/git/*')
+    expect(screen.getByRole('dialog', { name: '能力诊断' })).toHaveTextContent('MCP 模板')
     await user.click(screen.getByRole('button', { name: '关闭面板' }))
 
     await user.click(screen.getByRole('button', { name: '附加内容' }))
@@ -602,6 +760,7 @@ describe('Grok Forge workspace', () => {
       receive({ kind: 'thought', text: '准备改 auth' })
       receive({ kind: 'message', text: '正在编辑…' })
     })
+    await flushStreamBatch()
     expect(screen.getByRole('region', { name: 'Grok 实时回复' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '停止任务' }))
@@ -777,8 +936,9 @@ describe('Grok Forge workspace', () => {
     })
     // First open-to-connect attempt fails; later attempts succeed (retry / toggle).
     acpMocks.connect
-      .mockRejectedValueOnce(new Error('临时断开'))
+      .mockRejectedValueOnce(new Error('网络连接中断'))
       .mockResolvedValue({ sessionId: 'session-42', restored: false })
+    localStorage.setItem('grok-forge-workspace', 'C:\\repo')
     localStorage.setItem('grok-forge-auto-reconnect', '1')
     const user = userEvent.setup()
     render(<App />)

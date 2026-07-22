@@ -4,6 +4,7 @@ import {
   gitRestoreFile,
   gitRestoreFiles,
   gitStageFiles,
+  gitCommit,
   gitWorkspaceStatus,
   isTauriRuntime,
   listenForGrokEvents,
@@ -70,8 +71,12 @@ describe('desktop bridge', () => {
   it('starts the Grok ACP process with the selected workspace', async () => {
     const invoke = vi.fn().mockResolvedValue({ running: true, pid: 42 }) as InvokeFn
 
-    await expect(startGrok('E:\\repo', invoke)).resolves.toEqual({ running: true, pid: 42 })
-    expect(invoke).toHaveBeenCalledWith('start_grok', { cwd: 'E:\\repo' })
+    await expect(startGrok('E:\\repo', 'acc-test-1234', 'acc-test-1234', invoke)).resolves.toEqual({ running: true, pid: 42 })
+    expect(invoke).toHaveBeenCalledWith('start_grok', {
+      cwd: 'E:\\repo',
+      accountId: 'acc-test-1234',
+      taskAccountId: 'acc-test-1234',
+    })
   })
 
   it('sends RPC messages and stops the native process', async () => {
@@ -104,6 +109,7 @@ describe('desktop bridge', () => {
     await expect(gitRestoreFile('a.ts', vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
     await expect(gitRestoreFiles(['a.ts'], vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
     await expect(gitStageFiles(['a.ts'], vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
+    await expect(gitCommit('msg', [], vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
     await expect(gitWorkspaceStatus(vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
     await expect(terminalCreate({ command: 'echo' }, vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
     await expect(terminalOpenShell(undefined, vi.fn() as InvokeFn, false)).rejects.toThrow('浏览器预览')
@@ -121,6 +127,7 @@ describe('desktop bridge', () => {
         succeeded: 1,
         failed: 0,
       })
+      .mockResolvedValueOnce({ ok: true, message: 'fix auth timeout' })
       .mockResolvedValueOnce({
         branch: 'main',
         available: true,
@@ -143,6 +150,10 @@ describe('desktop bridge', () => {
       failed: 1,
     })
     await expect(gitStageFiles(['src/a.ts'], invoke as InvokeFn, true)).resolves.toMatchObject({ succeeded: 1 })
+    await expect(gitCommit('fix auth timeout', ['src/a.ts'], invoke as InvokeFn, true)).resolves.toMatchObject({
+      ok: true,
+      message: 'fix auth timeout',
+    })
     await expect(gitWorkspaceStatus(invoke as InvokeFn, true)).resolves.toMatchObject({
       branch: 'main',
       available: true,
@@ -163,8 +174,12 @@ describe('desktop bridge', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, 'git_restore_file', { path: 'src/a.ts' })
     expect(invoke).toHaveBeenNthCalledWith(2, 'git_restore_files', { paths: ['src/a.ts', 'src/b.ts'] })
     expect(invoke).toHaveBeenNthCalledWith(3, 'git_stage_files', { paths: ['src/a.ts'] })
-    expect(invoke).toHaveBeenNthCalledWith(4, 'git_workspace_status')
-    expect(invoke).toHaveBeenNthCalledWith(5, 'terminal_create', {
+    expect(invoke).toHaveBeenNthCalledWith(4, 'git_commit', {
+      message: 'fix auth timeout',
+      paths: ['src/a.ts'],
+    })
+    expect(invoke).toHaveBeenNthCalledWith(5, 'git_workspace_status')
+    expect(invoke).toHaveBeenNthCalledWith(6, 'terminal_create', {
       command: 'npm',
       args: ['test'],
       cwd: undefined,
@@ -172,8 +187,8 @@ describe('desktop bridge', () => {
       outputByteLimit: undefined,
       interactive: false,
     })
-    expect(invoke).toHaveBeenNthCalledWith(6, 'terminal_open_shell', { cwd: 'E:\\repo' })
-    expect(invoke).toHaveBeenNthCalledWith(7, 'terminal_write', { terminalId: 'shell_1', data: 'Get-ChildItem' })
+    expect(invoke).toHaveBeenNthCalledWith(7, 'terminal_open_shell', { cwd: 'E:\\repo' })
+    expect(invoke).toHaveBeenNthCalledWith(8, 'terminal_write', { terminalId: 'shell_1', data: 'Get-ChildItem' })
   })
 
   it('uses a no-op listener in browser preview mode', async () => {
@@ -302,6 +317,29 @@ describe('desktop bridge', () => {
       method: 'session/update',
       params: { update: { sessionUpdate: 'plan', entries: null } },
     })).toEqual({ kind: 'plan', entries: [] })
+  })
+
+  it('normalizes usage_update context window payloads', () => {
+    expect(normalizeAcpEvent({
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'usage_update',
+          used: 53_000,
+          size: 200_000,
+          cost: { amount: 0.045, currency: 'USD' },
+        },
+      },
+    })).toEqual({
+      kind: 'usage',
+      used: 53_000,
+      size: 200_000,
+      cost: { amount: 0.045, currency: 'USD' },
+    })
+    expect(normalizeAcpEvent({
+      method: 'session/update',
+      params: { update: { sessionUpdate: 'usage_update', used: 10, size: 0 } },
+    })).toBeNull()
   })
 
   it('parses permission requests from the agent', () => {

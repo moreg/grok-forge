@@ -838,12 +838,16 @@ impl McpState {
             .collect();
 
         for (client_name, client) in &mut self.owned_clients {
-            let Some(client_url) = self.configs.iter().find_map(|cfg| match cfg {
+            let Some((client_url, is_sse)) = self.configs.iter().find_map(|cfg| match cfg {
                 acp::McpServer::Http(acp::McpServerHttp { name, url, .. })
-                | acp::McpServer::Sse(acp::McpServerSse { name, url, .. })
                     if name == client_name =>
                 {
-                    Some(normalize_url(url))
+                    Some((normalize_url(url), false))
+                }
+                acp::McpServer::Sse(acp::McpServerSse { name, url, .. })
+                    if name == client_name =>
+                {
+                    Some((normalize_url(url), true))
                 }
                 _ => None,
             }) else {
@@ -866,15 +870,16 @@ impl McpState {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            *client = Arc::new(McpClient::new_http(
-                client_name.clone(),
-                HttpConfig {
-                    url: fresh_endpoint.to_string(),
-                    headers,
-                },
-                None,
-                self.meta_config_map.get(client_name.as_str()),
-            ));
+            let cfg = HttpConfig {
+                url: fresh_endpoint.to_string(),
+                headers,
+            };
+            let meta = self.meta_config_map.get(client_name.as_str());
+            *client = Arc::new(if is_sse {
+                McpClient::new_sse(client_name.clone(), cfg, None, meta)
+            } else {
+                McpClient::new_http(client_name.clone(), cfg, None, meta)
+            });
             tracing::info!(server = %client_name, "Refreshed managed MCP client with fresh token");
         }
     }
@@ -2187,6 +2192,9 @@ impl Transport<RoleClient> for SafeTokioChildProcess {
 enum PendingTransport {
     Stdio(Box<SafeTokioChildProcess>),
     Http(HttpConfig),
+    /// Classic HTTP+SSE (GET `/sse` → `endpoint` → POST `/message?sessionId=…`).
+    /// Distinct from [`Self::Http`] which uses streamable-HTTP.
+    Sse(HttpConfig),
     HttpAuth {
         config: HttpConfig,
         auth_manager: Arc<tokio::sync::Mutex<rmcp::transport::auth::AuthorizationManager>>,
@@ -2449,6 +2457,7 @@ impl Drop for InitGuard<'_> {
 fn restorable_transport(pending: &PendingTransport) -> Option<PendingTransport> {
     match pending {
         PendingTransport::Http(cfg) => Some(PendingTransport::Http(cfg.clone())),
+        PendingTransport::Sse(cfg) => Some(PendingTransport::Sse(cfg.clone())),
         PendingTransport::HttpAuth {
             config,
             auth_manager,
@@ -3054,6 +3063,24 @@ impl McpClient {
         )
     }
 
+    /// Classic HTTP+SSE transport (JetBrains IDEA, legacy remote MCP servers).
+    pub fn new_sse(
+        server_name: String,
+        config: HttpConfig,
+        overrides: Option<&McpClientTimeoutOverrides>,
+        meta_config: Option<&McpServerMetaConfig>,
+    ) -> Self {
+        Self::new_with_transport(
+            server_name,
+            PendingTransport::Sse(config.clone()),
+            overrides,
+            meta_config,
+            None,
+            Some(config),
+            None,
+        )
+    }
+
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
@@ -3367,6 +3394,33 @@ impl McpClient {
                         server: name.to_string(),
                         source: Box::new(e),
                     })
+            }
+            PendingTransport::Sse(config) => {
+                // Discover endpoint + run initialize under the same startup budget
+                // so a hung JetBrains/classic server cannot stall the session forever.
+                let name_owned = name.to_string();
+                let handler = self.make_client_handler();
+                tokio::time::timeout(timeout, async {
+                    let transport = crate::classic_sse::ClassicSseClientTransport::connect(
+                        &crate::classic_sse::ClassicSseConfig {
+                            url: config.url.clone(),
+                            headers: config.headers.clone(),
+                        },
+                        &name_owned,
+                    )
+                    .await
+                    .map_err(|e| {
+                        McpError::ClientError(format!(
+                            "Classic SSE connect failed for '{name_owned}': {e}"
+                        ))
+                    })?;
+                    handler.serve(transport).await.map_err(|e| McpError::HandshakeFailed {
+                        server: name_owned.clone(),
+                        source: Box::new(e),
+                    })
+                })
+                .await
+                .map_err(|_| McpError::timeout(name, timeout))?
             }
             PendingTransport::HttpAuth {
                 config,
@@ -4114,10 +4168,28 @@ pub async fn start_mcp_server(
                 meta_config,
             ))
         }
-        acp::McpServer::Http(acp::McpServerHttp {
+        acp::McpServer::Sse(acp::McpServerSse {
             name, url, headers, ..
-        })
-        | acp::McpServer::Sse(acp::McpServerSse {
+        }) => {
+            if let Some(mc) = meta_config {
+                tracing::info!(server = %name, %url, ?mc, "MCP classic-SSE: meta config override");
+            }
+            let headers = expand_session_id_headers(headers, session_id);
+            let http_config = HttpConfig {
+                url: url.clone(),
+                headers,
+            };
+            // Classic SSE does not use OAuth discovery on the SSE URL (POST
+            // initialize never hits `/sse`). Wire static Authorization headers
+            // through `HttpConfig.headers` when needed.
+            Ok(McpClient::new_sse(
+                name.clone(),
+                http_config,
+                overrides,
+                meta_config,
+            ))
+        }
+        acp::McpServer::Http(acp::McpServerHttp {
             name, url, headers, ..
         }) => {
             if let Some(mc) = meta_config {

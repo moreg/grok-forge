@@ -114,10 +114,17 @@ impl XaiProtoBuilder {
 
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
+            // Unix can stream deps via /dev/stdout and discard descriptors via
+            // /dev/null. Windows has neither path; use temp files instead.
+            let dep_tmp = tempfile::NamedTempFile::new().context("create dep temp file")?;
+            let desc_tmp = tempfile::NamedTempFile::new().context("create desc temp file")?;
+            let dep_path = dep_tmp.path().to_path_buf();
+            let desc_path = desc_tmp.path().to_path_buf();
+
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
             command
-                .arg("--dependency_out=/dev/stdout")
-                .arg("--descriptor_set_out=/dev/null");
+                .arg(format!("--dependency_out={}", dep_path.display()))
+                .arg(format!("--descriptor_set_out={}", desc_path.display()));
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -138,35 +145,48 @@ impl XaiProtoBuilder {
             command.stdin(Stdio::null());
             command.stderr(Stdio::inherit());
 
-            let output = command.output().context("protoc command failed")?;
-            if !output.status.success() {
+            let status = command.status().context("protoc command failed")?;
+            if !status.success() {
                 return Err(anyhow::anyhow!("protoc command failed"));
             }
 
-            let output =
-                String::from_utf8(output.stdout).context("protoc command output not UTF-8")?;
+            let output = fs::read_to_string(&dep_path).context("read protoc dependency_out")?;
 
+            // dep file format: `descriptor_path: dep1 dep2 \` (makefile-style).
+            // On Unix with /dev/null the line starts with `/dev/null:`; on Windows
+            // it starts with the descriptor temp path (which itself contains `:`).
+            // Split on `": "` (colon + space) so drive letters like `C:\…` are safe.
             let mut lines = output.lines();
-            let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = "/dev/null:";
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
-            })?;
+            let first_line = lines.next().context("protoc dependency_out is empty")?;
+            let rem = first_line
+                .split_once(": ")
+                .or_else(|| first_line.split_once(':'))
+                .map(|(_, rest)| rest)
+                .with_context(|| format!("protoc dependency_out missing ':': {output:?}"))?;
             for line in iter::once(rem).chain(lines) {
                 let line = line.trim();
-                let line = line.strip_suffix("\\").unwrap_or(line);
-                // Depending on absolute paths like
-                // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
-                // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/") {
+                let line = line.strip_suffix('\\').unwrap_or(line).trim();
+                if line.is_empty() {
                     continue;
                 }
+                // Makefile lines may list several paths separated by spaces.
+                // Paths with spaces are rare for protos; split on whitespace.
+                for path in line.split_whitespace() {
+                    // Depending on absolute paths like
+                    // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
+                    // is valid, but we want to have output more deterministic.
+                    if path.contains("/include/google/protobuf/")
+                        || path.contains("\\include\\google\\protobuf\\")
+                    {
+                        continue;
+                    }
 
-                if !fs::exists(line)? {
-                    return Err(anyhow::anyhow!("dependency file not found: {line}"));
+                    if !fs::exists(path)? {
+                        return Err(anyhow::anyhow!("dependency file not found: {path}"));
+                    }
+
+                    println!("cargo:rerun-if-changed={path}");
                 }
-
-                println!("cargo:rerun-if-changed={line}");
             }
         }
 

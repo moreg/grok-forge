@@ -22,6 +22,8 @@ export type PlanStep = {
 
 export type Task = {
   id: string
+  /** Local account that owns this task and its ACP session. Old tasks are unowned. */
+  accountId: string | null
   title: string
   messages: ChatMessage[]
   liveMessage: string
@@ -118,8 +120,10 @@ export function normalizeTags(value: unknown): string[] {
 export function createTask(partial?: Partial<Task> & { messages?: unknown }): Task {
   const now = Date.now()
   const id = partial?.id ?? `task-${now}-${Math.random().toString(36).slice(2, 8)}`
+  const accountId = typeof partial?.accountId === 'string' && partial.accountId ? partial.accountId : null
   return {
     id,
+    accountId,
     title: partial?.title ?? '准备开始',
     messages: normalizeMessages(partial?.messages),
     liveMessage: partial?.liveMessage ?? '',
@@ -129,7 +133,7 @@ export function createTask(partial?: Partial<Task> & { messages?: unknown }): Ta
     status: partial?.status ?? 'idle',
     updatedAt: partial?.updatedAt ?? now,
     sessionKey: partial?.sessionKey ?? id,
-    acpSessionId: partial?.acpSessionId,
+    acpSessionId: accountId ? partial?.acpSessionId : undefined,
     attachments: partial?.attachments ?? [],
     tags: normalizeTags(partial?.tags),
     pinned: Boolean(partial?.pinned),
@@ -329,18 +333,29 @@ export function loadTaskSnapshot(): TaskSnapshot {
   }
 }
 
-/** Drop oversized data-URL attachments before persisting so localStorage quota is not blown. */
-function sanitizeDataUrlList(items: string[] | undefined, maxDataUrlChars: number): string[] | undefined {
+/**
+ * Data-URL blobs must not enter localStorage (quota + JSON thrash).
+ * Prefer workspace cache paths from `attachmentStore.persistDataUrlAttachment`.
+ * Set maxDataUrlChars > 0 only for tiny stubs in tests.
+ */
+export const MAX_PERSISTED_DATA_URL_CHARS = 0
+
+/** Drop data: URL attachments before persisting so localStorage quota is not blown. */
+export function sanitizeDataUrlList(
+  items: string[] | undefined,
+  maxDataUrlChars = MAX_PERSISTED_DATA_URL_CHARS,
+): string[] | undefined {
   if (!items || items.length === 0) return items
   const next = items.flatMap((item) => {
-    if (!item.startsWith('data:') || item.length <= maxDataUrlChars) return [item]
+    if (!item.startsWith('data:')) return [item]
+    if (maxDataUrlChars > 0 && item.length <= maxDataUrlChars) return [item]
     return []
   })
   return next
 }
 
 function sanitizeTasksForStorage(tasks: Task[]): Task[] {
-  const maxDataUrlChars = 120_000
+  const maxDataUrlChars = MAX_PERSISTED_DATA_URL_CHARS
   return tasks.map((task) => {
     const attachments = sanitizeDataUrlList(task.attachments, maxDataUrlChars) ?? []
     const messages = task.messages.map((message) => {
@@ -354,12 +369,27 @@ function sanitizeTasksForStorage(tasks: Task[]): Task[] {
     })
     const attachmentsChanged = attachments.length !== (task.attachments ?? []).length
     const messagesChanged = messages.some((message, index) => message !== task.messages[index])
-    if (!attachmentsChanged && !messagesChanged) return task
-    return {
-      ...task,
-      attachments,
-      messages,
+    let next = task
+    if (attachmentsChanged || messagesChanged) {
+      next = {
+        ...task,
+        attachments,
+        messages,
+      }
     }
+    // Mid-turn snapshots must not leave a "running" task with empty live shell
+    // after reload (composer would refuse send). Drop ephemeral stream state and
+    // normalize status so the UI can accept a new prompt.
+    if (next.status === 'running') {
+      return {
+        ...next,
+        status: 'idle',
+        liveMessage: '',
+        liveThought: '',
+        liveEvents: [],
+      }
+    }
+    return next
   })
 }
 
@@ -657,6 +687,47 @@ export function statusLabel(status: TaskStatus) {
   return '就绪'
 }
 
+function normalizePlanStatus(raw: string): PlanStep['status'] {
+  const status = raw.toLowerCase()
+  if (status === 'completed' || status === 'done') return 'completed'
+  if (status === 'in_progress' || status === 'running') return 'in_progress'
+  if (status === 'failed' || status === 'error' || status === 'cancelled') return 'failed'
+  return 'pending'
+}
+
+function isTerminalStatus(status: PlanStep['status']) {
+  return status === 'completed' || status === 'failed'
+}
+
+/** Stamp start/finish times so the timeline can show reliable durations. */
+export function applyStepTiming(
+  step: PlanStep,
+  previous: PlanStep | undefined,
+  now = Date.now(),
+): PlanStep {
+  const wasTerminal = previous ? isTerminalStatus(previous.status) : false
+  const terminal = isTerminalStatus(step.status)
+  const active = step.status === 'in_progress' || terminal
+
+  // Keep prior start; otherwise start the clock on first active sighting.
+  let startedAt = previous?.startedAt
+  if (startedAt == null && active) startedAt = now
+
+  let finishedAt = previous?.finishedAt
+  if (terminal) {
+    // Re-stamp finish only when newly reaching a terminal state.
+    finishedAt = wasTerminal && previous?.finishedAt != null ? previous.finishedAt : now
+  } else {
+    finishedAt = undefined
+  }
+
+  return {
+    ...step,
+    startedAt,
+    finishedAt,
+  }
+}
+
 export function parsePlanEntries(entries: unknown[]): PlanStep[] {
   return entries.flatMap((value): PlanStep[] => {
     if (typeof value === 'string' && value.trim()) {
@@ -670,14 +741,8 @@ export function parsePlanEntries(entries: unknown[]): PlanStep[] {
         ? entry.text
         : ''
     if (!content.trim()) return []
-    const raw = typeof entry.status === 'string' ? entry.status.toLowerCase() : 'pending'
-    const status = raw === 'completed' || raw === 'done'
-      ? 'completed'
-      : raw === 'in_progress' || raw === 'running'
-        ? 'in_progress'
-        : raw === 'failed' || raw === 'error'
-          ? 'failed'
-          : 'pending'
+    const raw = typeof entry.status === 'string' ? entry.status : 'pending'
+    const status = normalizePlanStatus(raw)
     const detail = typeof entry.detail === 'string'
       ? entry.detail
       : typeof entry.description === 'string'
@@ -685,6 +750,34 @@ export function parsePlanEntries(entries: unknown[]): PlanStep[] {
         : undefined
     return [{ content: content.trim(), status, detail }]
   })
+}
+
+/**
+ * Merge an ACP plan update into existing timeline steps.
+ * Preserves tool rows (toolCallId) and start/finish timestamps on matching plan steps.
+ */
+export function mergePlanIntoSteps(
+  previous: PlanStep[],
+  entries: unknown[],
+  now = Date.now(),
+): PlanStep[] {
+  const toolSteps = previous.filter((step) => Boolean(step.toolCallId))
+  const priorPlan = previous.filter((step) => !step.toolCallId)
+  const used = new Set<number>()
+
+  const nextPlan = parsePlanEntries(entries).map((step, index) => {
+    let matchIndex = priorPlan.findIndex(
+      (candidate, candidateIndex) => !used.has(candidateIndex) && candidate.content === step.content,
+    )
+    if (matchIndex < 0 && index < priorPlan.length && !used.has(index)) {
+      matchIndex = index
+    }
+    const prior = matchIndex >= 0 ? priorPlan[matchIndex] : undefined
+    if (matchIndex >= 0) used.add(matchIndex)
+    return applyStepTiming(step, prior, now)
+  })
+
+  return [...nextPlan, ...toolSteps]
 }
 
 export function archiveAssistantReply(task: Task): Task {
@@ -706,8 +799,11 @@ export function archiveAssistantReply(task: Task): Task {
   }
 }
 
-export function mergeToolIntoPlan(steps: PlanStep[], event: Extract<AcpUiEvent, { kind: 'tool' }>): PlanStep[] {
-  const now = Date.now()
+export function mergeToolIntoPlan(
+  steps: PlanStep[],
+  event: Extract<AcpUiEvent, { kind: 'tool' }>,
+  now = Date.now(),
+): PlanStep[] {
   const status = event.status === 'completed' || event.status === 'done'
     ? 'completed'
     : event.status === 'failed' || event.status === 'error' || event.status === 'cancelled'
@@ -728,39 +824,65 @@ export function mergeToolIntoPlan(steps: PlanStep[], event: Extract<AcpUiEvent, 
     if (index >= 0) {
       const current = steps[index]
       const next = [...steps]
-      next[index] = {
-        ...current,
-        content: event.title || current.content,
-        status,
-        detail: detail ?? current.detail,
-        finishedAt: status === 'completed' || status === 'failed' ? now : current.finishedAt,
-        startedAt: current.startedAt ?? (status === 'in_progress' ? now : undefined),
-      }
+      next[index] = applyStepTiming(
+        {
+          ...current,
+          content: event.title || current.content,
+          status,
+          detail: detail ?? current.detail,
+          toolCallId: event.toolCallId,
+        },
+        current,
+        now,
+      )
       return next
     }
   }
 
   return [
     ...steps,
-    {
-      content,
-      status,
-      detail,
-      toolCallId: event.toolCallId,
-      startedAt: status === 'in_progress' ? now : undefined,
-      finishedAt: status === 'completed' || status === 'failed' ? now : undefined,
-    },
+    applyStepTiming(
+      {
+        content,
+        status,
+        detail,
+        toolCallId: event.toolCallId,
+      },
+      undefined,
+      now,
+    ),
   ]
 }
 
-export function formatStepDuration(step: PlanStep) {
-  if (!step.startedAt) return undefined
-  const end = step.finishedAt ?? Date.now()
-  const seconds = Math.max(1, Math.round((end - step.startedAt) / 1000))
+/** Format a millisecond span as compact duration text (e.g. `3s`, `2m 5s`). */
+export function formatDurationMs(ms: number): string {
+  const seconds = Math.max(1, Math.round(Math.max(0, ms) / 1000))
   if (seconds < 60) return `${seconds}s`
   const minutes = Math.floor(seconds / 60)
   const rest = seconds % 60
   return `${minutes}m ${rest}s`
+}
+
+export function formatStepDuration(step: PlanStep, now = Date.now()) {
+  if (!step.startedAt) return undefined
+  const end = step.finishedAt ?? now
+  return formatDurationMs(end - step.startedAt)
+}
+
+/** Wall-clock span across all timed steps (earliest start → latest end). */
+export function formatStepsTotalDuration(steps: PlanStep[], now = Date.now()): string | undefined {
+  const timed = steps.filter((step) => typeof step.startedAt === 'number')
+  if (timed.length === 0) return undefined
+  const start = Math.min(...timed.map((step) => step.startedAt as number))
+  const end = Math.max(
+    ...timed.map((step) => {
+      if (typeof step.finishedAt === 'number') return step.finishedAt
+      if (step.status === 'in_progress') return now
+      // Terminal without finish stamp, or pending with only start — use start as floor.
+      return step.startedAt as number
+    }),
+  )
+  return formatDurationMs(end - start)
 }
 
 export const SLASH_COMMANDS = [
@@ -1001,6 +1123,8 @@ export function exportTaskReplay(task: Task) {
 
   if (task.planSteps.length > 0) {
     lines.push('## 执行计划', '')
+    const totalDuration = formatStepsTotalDuration(task.planSteps)
+    if (totalDuration) lines.push(`- 总耗时：${totalDuration}`, '')
     for (const [index, step] of task.planSteps.entries()) {
       const mark = step.status === 'completed'
         ? 'x'
@@ -1008,7 +1132,9 @@ export function exportTaskReplay(task: Task) {
           ? '!'
           : ' '
       const detail = step.detail ? ` — ${step.detail}` : ''
-      lines.push(`${index + 1}. [${mark}] ${step.content}${detail}`)
+      const duration = formatStepDuration(step)
+      const durationText = duration ? ` (${duration})` : ''
+      lines.push(`${index + 1}. [${mark}] ${step.content}${detail}${durationText}`)
     }
     lines.push('')
   }
@@ -1098,6 +1224,7 @@ export function exportAllTasksJson(tasks: Task[], activeTaskId?: string) {
     taskCount: tasks.length,
     tasks: tasks.map((task) => ({
       id: task.id,
+      accountId: task.accountId,
       title: task.title,
       status: task.status,
       updatedAt: task.updatedAt,
@@ -1157,20 +1284,24 @@ export type ImportTasksResult = {
   mode: ImportTasksMode
 }
 
-function normalizeImportedTask(value: unknown): Task | null {
+function normalizeImportedTask(value: unknown, localAccountIds: ReadonlySet<string>): Task | null {
   if (value === null || typeof value !== 'object') return null
   const row = value as Record<string, unknown>
   if (typeof row.id !== 'string' || !row.id.trim()) return null
   const status = row.status === 'running' || row.status === 'done' || row.status === 'idle'
     ? row.status
     : 'idle'
+  const accountId = typeof row.accountId === 'string' && localAccountIds.has(row.accountId) ? row.accountId : null
   return createTask({
     id: row.id,
+    accountId,
     title: typeof row.title === 'string' && row.title.trim() ? row.title : '导入任务',
     status,
     updatedAt: typeof row.updatedAt === 'number' ? row.updatedAt : Date.now(),
-    sessionKey: typeof row.sessionKey === 'string' ? row.sessionKey : row.id,
-    acpSessionId: typeof row.acpSessionId === 'string' ? row.acpSessionId : undefined,
+    // Imported session-map keys are untrusted just like remote ACP session IDs.
+    sessionKey: row.id,
+    // External snapshots never get to resume a remote ACP session directly.
+    acpSessionId: undefined,
     attachments: Array.isArray(row.attachments)
       ? row.attachments.filter((item): item is string => typeof item === 'string')
       : [],
@@ -1202,10 +1333,13 @@ function normalizeImportedTask(value: unknown): Task | null {
 }
 
 /** Parse a previously exported JSON snapshot (object or bare task array). */
-export function parseTaskExportPayload(raw: string | unknown): ParsedTaskExport {
+export function parseTaskExportPayload(
+  raw: string | unknown,
+  localAccountIds: ReadonlySet<string> = new Set(),
+): ParsedTaskExport {
   const value = typeof raw === 'string' ? JSON.parse(raw) as unknown : raw
   if (Array.isArray(value)) {
-    const tasks = value.map(normalizeImportedTask).filter((task): task is Task => Boolean(task))
+    const tasks = value.map((item) => normalizeImportedTask(item, localAccountIds)).filter((task): task is Task => Boolean(task))
     if (tasks.length === 0) throw new Error('导入文件中没有有效任务')
     return { tasks }
   }
@@ -1215,7 +1349,7 @@ export function parseTaskExportPayload(raw: string | unknown): ParsedTaskExport 
   const root = value as Record<string, unknown>
   const list = Array.isArray(root.tasks) ? root.tasks : null
   if (!list) throw new Error('导出文件缺少 tasks 数组')
-  const tasks = list.map(normalizeImportedTask).filter((task): task is Task => Boolean(task))
+  const tasks = list.map((item) => normalizeImportedTask(item, localAccountIds)).filter((task): task is Task => Boolean(task))
   if (tasks.length === 0) throw new Error('导入文件中没有有效任务')
   const activeTaskId = typeof root.activeTaskId === 'string' ? root.activeTaskId : undefined
   return { tasks, activeTaskId }
@@ -1265,7 +1399,9 @@ export function importTasksSnapshot(
     }
     byId.set(incoming.id, createTask({
       ...incoming,
-      acpSessionId: existing?.acpSessionId ?? incoming.acpSessionId,
+      // Existing local ownership wins. Imported sessions never cross an account boundary.
+      accountId: existing?.accountId ?? incoming.accountId,
+      acpSessionId: existing?.accountId === incoming.accountId ? existing?.acpSessionId : undefined,
       sessionKey: incoming.sessionKey || incoming.id,
     }))
     imported += 1
@@ -1289,6 +1425,28 @@ export function filterSlashCommands(
     item.command.toLowerCase().includes(needle)
     || item.description.toLowerCase().includes(needle)
   ))
+}
+
+/**
+ * Inline composer autocomplete for slash commands.
+ * Active only when the whole input is a single `/token` with no trailing args/space.
+ */
+export function matchInlineSlashCommands(
+  input: string,
+  commands: ReadonlyArray<{ command: string; description: string }> = SLASH_COMMANDS,
+) {
+  if (!input.startsWith('/')) return []
+  if (/\s/.test(input)) return []
+  const needle = input.toLowerCase()
+  return commands.filter((item) => item.command.toLowerCase().startsWith(needle))
+}
+
+export function summarizeGitCommit(message: string, ok: boolean, error?: string) {
+  if (ok) {
+    const short = message.trim().length > 48 ? `${message.trim().slice(0, 48)}…` : message.trim()
+    return `已创建提交：${short}`
+  }
+  return error?.trim() || 'git 提交失败'
 }
 
 export function filterCommandPaletteTasks(tasks: Task[], query: string, limit = 8) {

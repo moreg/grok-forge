@@ -23,9 +23,22 @@ import { type McpServerConfig, toSessionMcpServers } from './mcp'
 
 type JsonRpcId = number
 type PendingRequest = {
+  method: string
   resolve: (value: unknown) => void
   reject: (reason: Error) => void
   timeout: ReturnType<typeof setTimeout> | null
+}
+
+export class GrokRequestError extends Error {
+  constructor(
+    readonly method: string,
+    message: string,
+    readonly code?: number | string,
+    readonly data?: unknown,
+  ) {
+    super(message)
+    this.name = 'GrokRequestError'
+  }
 }
 
 export type LiveGitFile = {
@@ -100,14 +113,17 @@ export type PromptBlock =
   | { type: 'resource'; resource: { uri: string; mimeType?: string; text?: string } }
 
 export interface GrokTransport {
-  start(cwd: string): Promise<unknown>
+  start(cwd: string, accountId?: string, taskAccountId?: string): Promise<unknown>
   send(payload: unknown): Promise<unknown>
   listen(listener: (payload: unknown) => void): Promise<UnlistenFn>
   stop(): Promise<unknown>
 }
 
 export class NativeGrokTransport implements GrokTransport {
-  start(cwd: string) { return startGrok(cwd) }
+  start(cwd: string, accountId?: string, taskAccountId?: string) {
+    if (!accountId) return Promise.reject(new Error('尚未选择 Grok 账号'))
+    return startGrok(cwd, accountId, taskAccountId)
+  }
   send(payload: unknown) { return sendGrokRpc(payload) }
   listen(listener: (payload: unknown) => void) { return listenForRawGrokEvents(listener) }
   stop() { return stopGrok() }
@@ -230,6 +246,10 @@ export class GrokAcpClient {
   private gitExtension: boolean | null = null
   private terminalExtension: boolean | null = null
   private modelId: string | null = null
+  private accountId: string | null = null
+  private taskAccountId: string | null = null
+  private interactiveAuthentication = false
+  private authMethods: Array<{ id: string; name?: string; description?: string }> = []
 
   constructor(
     private readonly transport: GrokTransport = new NativeGrokTransport(),
@@ -243,6 +263,28 @@ export class GrokAcpClient {
   setPreferredModel(modelId: string | null | undefined) {
     const next = modelId?.trim()
     this.modelId = next ? next : null
+  }
+
+  setAccountId(accountId: string | null | undefined) {
+    this.accountId = accountId?.trim() || null
+  }
+
+  setTaskAccountId(accountId: string | null | undefined) {
+    this.taskAccountId = accountId?.trim() || null
+  }
+
+  private assertAccountIsolation() {
+    if (!this.accountId || !this.taskAccountId || this.accountId !== this.taskAccountId) {
+      throw new Error('任务归属账号与当前 Agent 账号不一致')
+    }
+  }
+
+  requestInteractiveAuthentication() {
+    this.interactiveAuthentication = true
+  }
+
+  get availableAuthMethods() {
+    return [...this.authMethods]
   }
 
   get preferredModel() {
@@ -291,7 +333,7 @@ export class GrokAcpClient {
     if (!this.unlisten) {
       this.unlisten = await this.transport.listen((payload) => this.handlePayload(payload))
     }
-    await this.transport.start(cwd)
+    await this.transport.start(cwd, this.accountId ?? undefined, this.taskAccountId ?? undefined)
     if (this.transport instanceof NativeGrokTransport || isNativeBridgeAvailable()) {
       await setWorkspace(cwd).catch(() => undefined)
     }
@@ -301,6 +343,8 @@ export class GrokAcpClient {
         loadSession?: boolean
         promptCapabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean }
       }
+      authMethods?: Array<{ id?: string; name?: string; description?: string }>
+      _meta?: { defaultAuthMethodId?: string }
     }>('initialize', {
       protocolVersion: 1,
       clientCapabilities: {
@@ -315,10 +359,27 @@ export class GrokAcpClient {
     })
     this.supportsLoadSession = init?.agentCapabilities?.loadSession === true
     this.supportsImagePrompt = init?.agentCapabilities?.promptCapabilities?.image === true
+    this.authMethods = (init?.authMethods ?? []).flatMap((method) => (
+      typeof method.id === 'string' ? [{ id: method.id, name: method.name, description: method.description }] : []
+    ))
+    const advertisedDefault = init?._meta?.defaultAuthMethodId
+    const defaultMethod = this.authMethods.find((method) => method.id === advertisedDefault)
+    const methodId = this.interactiveAuthentication
+      ? (defaultMethod?.id === 'oidc' || defaultMethod?.id === 'grok.com' ? defaultMethod.id : undefined)
+        ?? this.authMethods.find((method) => method.id === 'oidc' || method.id === 'grok.com')?.id
+      : (defaultMethod?.id === 'cached_token' ? defaultMethod.id : undefined)
+        ?? this.authMethods.find((method) => method.id === 'cached_token')?.id
+    if (methodId) {
+      await this.request('authenticate', { methodId })
+      this.interactiveAuthentication = false
+    } else if (this.authMethods.length > 0) {
+      throw new Error(this.interactiveAuthentication ? '当前 Agent 未提供 OIDC 浏览器登录方式' : '当前账号需要重新登录')
+    }
     return this.ensureSession(sessionKey, cwd, preferredSessionId)
   }
 
   async ensureSession(sessionKey: string, cwd = this.cwd, preferredSessionId?: string) {
+    this.assertAccountIsolation()
     const existing = this.sessionByKey.get(sessionKey)
     if (existing) {
       this.sessionId = existing
@@ -421,6 +482,7 @@ export class GrokAcpClient {
   }
 
   async promptBlocks(blocks: PromptBlock[], sessionKey = 'default') {
+    this.assertAccountIsolation()
     if (!this.sessionId && this.sessionByKey.size === 0) {
       return Promise.reject(new Error('Grok 会话尚未建立'))
     }
@@ -573,6 +635,7 @@ export class GrokAcpClient {
     }
     this.sessionId = null
     this.sessionByKey.clear()
+    this.authMethods = []
     this.unlisten?.()
     this.unlisten = null
     for (const pending of this.pending.values()) {
@@ -593,10 +656,11 @@ export class GrokAcpClient {
       const timeout = timeoutMs > 0
         ? setTimeout(() => {
           this.pending.delete(id)
-          reject(new Error(`Grok 请求超时：${method}`))
+          reject(new GrokRequestError(method, `Grok 请求超时：${method}`, 'timeout'))
         }, timeoutMs)
         : null
       this.pending.set(id, {
+        method,
         resolve: resolve as (value: unknown) => void,
         reject,
         timeout,
@@ -604,7 +668,9 @@ export class GrokAcpClient {
       void this.transport.send({ jsonrpc: '2.0', id, method, params }).catch((reason) => {
         if (timeout) clearTimeout(timeout)
         this.pending.delete(id)
-        reject(reason instanceof Error ? reason : new Error(String(reason)))
+        reject(reason instanceof GrokRequestError
+          ? reason
+          : new GrokRequestError(method, reason instanceof Error ? reason.message : String(reason), 'transport'))
       })
     })
   }
@@ -634,7 +700,12 @@ export class GrokAcpClient {
         this.pending.delete(message.id)
         const error = object(message.error)
         if (error) {
-          pending.reject(new Error(typeof error.message === 'string' ? error.message : 'Grok ACP 请求失败'))
+          pending.reject(new GrokRequestError(
+            pending.method,
+            typeof error.message === 'string' ? error.message : 'Grok ACP 请求失败',
+            typeof error.code === 'number' || typeof error.code === 'string' ? error.code : undefined,
+            error.data,
+          ))
         } else {
           pending.resolve(message.result)
         }

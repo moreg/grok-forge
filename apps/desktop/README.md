@@ -202,3 +202,9 @@ submission, workspace selection, and live response stream are implemented.
 - **Chat Markdown**: assistant / system / user messages and the live stream render
   fenced code (with lightweight syntax colors), headings, lists, quotes, links,
   bold/italic, and inline code — no extra npm dependency.
+- **Copy helpers**: code blocks and chat bubbles expose one-click copy.
+- **Inline slash autocomplete**: type `/` in the composer for ↑/↓/Tab/Enter suggestions.
+- **Git commit**: Review → 提交 stages accepted changes and runs `git commit` (no push).
+- **Capability panel**: former 扩展中心 renamed 能力诊断; MCP templates + open MCP settings.
+- **Markdown extras**: GFM tables, task checklists (`- [ ]` / `- [x]`), clickable
+  path refs (`src/foo.ts:42` copies on click).

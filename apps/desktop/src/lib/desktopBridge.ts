@@ -13,6 +13,22 @@ export type BackendStatus = {
 export type GrokProcessStatus = {
   running: boolean
   pid?: number
+  accountId?: string
+}
+export type CredentialRenewal = 'refreshable' | 'non-refreshable' | 'unknown'
+export type AccountAuthStatus = 'unknown' | 'valid' | 'refreshing' | 'temporarily-unavailable' | 'relogin-required'
+
+export type AccountCredentialInspection = {
+  exists: boolean
+  renewal: CredentialRenewal
+  authStatus: AccountAuthStatus
+  expiresAt?: string | null
+  accountLabel?: string | null
+}
+
+export type LegacyAccountResult = {
+  accountId?: string | null
+  credentialExists: boolean
 }
 
 export type PermissionOption = {
@@ -42,6 +58,13 @@ export type AcpUiEvent =
       options: PermissionOption[]
     }
   | { kind: 'workspace' }
+  /** ACP session/update usage_update — context window (+ optional cost). */
+  | {
+      kind: 'usage'
+      used: number
+      size: number
+      cost?: { amount: number; currency: string }
+    }
 
 export type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -62,8 +85,40 @@ export async function getBackendStatus(
   return invokeFn<BackendStatus>('grok_status')
 }
 
-export function startGrok(cwd: string, invokeFn: InvokeFn = invoke) {
-  return invokeFn<GrokProcessStatus>('start_grok', { cwd })
+export function startGrok(
+  cwd: string,
+  accountIdOrInvoke: string | InvokeFn,
+  taskAccountIdOrInvoke?: string | InvokeFn,
+  invokeFn: InvokeFn = invoke,
+) {
+  const accountId = typeof accountIdOrInvoke === 'string' ? accountIdOrInvoke : 'legacy-default'
+  const taskAccountId = typeof taskAccountIdOrInvoke === 'string' ? taskAccountIdOrInvoke : undefined
+  const call = typeof accountIdOrInvoke === 'function'
+    ? accountIdOrInvoke
+    : typeof taskAccountIdOrInvoke === 'function'
+      ? taskAccountIdOrInvoke
+      : invokeFn
+  return call<GrokProcessStatus>('start_grok', { cwd, accountId, taskAccountId })
+}
+
+export function ensureLegacyAccount(invokeFn: InvokeFn = invoke) {
+  return invokeFn<LegacyAccountResult>('ensure_legacy_account')
+}
+
+export function inspectAccountCredential(accountId: string, invokeFn: InvokeFn = invoke) {
+  return invokeFn<AccountCredentialInspection>('inspect_account_credential', { accountId })
+}
+
+export function importAccountCredential(accountId: string, raw: string, invokeFn: InvokeFn = invoke) {
+  return invokeFn<Omit<AccountCredentialInspection, 'exists'>>('import_account_credential', { accountId, raw })
+}
+
+export function migrateKeyringCredential(accountId: string, key: string, invokeFn: InvokeFn = invoke) {
+  return invokeFn<Omit<AccountCredentialInspection, 'exists'>>('migrate_keyring_credential', { accountId, key })
+}
+
+export function deleteAccountCredential(accountId: string, invokeFn: InvokeFn = invoke) {
+  return invokeFn<void>('delete_account_credential', { accountId })
 }
 
 export function stopGrok(invokeFn: InvokeFn = invoke) {
@@ -141,7 +196,6 @@ function normalizeGitBatch(result: GitBatchResult): GitBatchResult {
     failed: typeof result.failed === 'number' ? result.failed : results.filter((r) => !r.ok).length,
   }
 }
-
 /** Restore one or more workspace paths to HEAD (tracked) or delete untracked files. */
 export async function gitRestoreFiles(
   paths: string[],
@@ -166,6 +220,40 @@ export async function gitStageFiles(
   if (unique.length === 0) return { results: [], succeeded: 0, failed: 0 }
   const result = await invokeFn<GitBatchResult>('git_stage_files', { paths: unique })
   return normalizeGitBatch(result)
+}
+
+export type GitCommitResult = {
+  ok: boolean
+  message: string
+  error?: string
+}
+
+/**
+ * Create a git commit.
+ * When `paths` is non-empty, only those paths are staged and committed
+ * (`git commit -m … -- <paths>`), excluding unrelated index entries.
+ */
+export async function gitCommit(
+  message: string,
+  paths: string[] = [],
+  invokeFn: InvokeFn = invoke,
+  native = isTauriRuntime(),
+): Promise<GitCommitResult> {
+  if (!native) throw new Error('浏览器预览模式不支持 git 提交')
+  const trimmed = message.trim()
+  if (!trimmed) {
+    return { ok: false, message: '', error: '提交说明不能为空' }
+  }
+  const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))]
+  const result = await invokeFn<GitCommitResult>('git_commit', {
+    message: trimmed,
+    paths: unique.length > 0 ? unique : null,
+  })
+  return {
+    ok: result.ok === true,
+    message: typeof result.message === 'string' ? result.message : trimmed,
+    error: typeof result.error === 'string' ? result.error : undefined,
+  }
 }
 
 export type LocalGitFile = {
@@ -475,6 +563,30 @@ export function normalizeAcpEvent(payload: unknown): AcpUiEvent | null {
   }
   if (updateType === 'plan') {
     return { kind: 'plan', entries: Array.isArray(update.entries) ? update.entries : [] }
+  }
+  if (updateType === 'usage_update' || updateType === 'context_update') {
+    const used = typeof update.used === 'number'
+      ? update.used
+      : typeof update.contextUsed === 'number'
+        ? update.contextUsed
+        : NaN
+    const size = typeof update.size === 'number'
+      ? update.size
+      : typeof update.contextSize === 'number'
+        ? update.contextSize
+        : NaN
+    if (!Number.isFinite(used) || !Number.isFinite(size) || size <= 0) return null
+    const costRaw = record(update.cost)
+    const amount = costRaw && typeof costRaw.amount === 'number' ? costRaw.amount : undefined
+    const currency = costRaw && typeof costRaw.currency === 'string' ? costRaw.currency : undefined
+    return {
+      kind: 'usage',
+      used: Math.max(0, used),
+      size,
+      cost: amount != null && currency
+        ? { amount, currency }
+        : undefined,
+    }
   }
 
   return null

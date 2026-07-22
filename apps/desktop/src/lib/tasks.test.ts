@@ -14,6 +14,8 @@ import {
   collectTaskTags,
   filterCommandPaletteTasks,
   filterSlashCommands,
+  matchInlineSlashCommands,
+  summarizeGitCommit,
   importTasksSnapshot,
   countArchivedTasks,
   filterSessionTasks,
@@ -40,7 +42,9 @@ import {
   toggleTaskTag,
   isDataImageAttachment,
   isDataTextAttachment,
+  formatDurationMs,
   formatStepDuration,
+  formatStepsTotalDuration,
   helpMessage,
   applyAppearance,
   fontScaleLabel,
@@ -56,6 +60,7 @@ import {
   saveFontScale,
   savePreferredModel,
   saveTheme,
+  mergePlanIntoSteps,
   mergeToolIntoPlan,
   normalizeMessages,
   parsePlanEntries,
@@ -107,6 +112,50 @@ describe('task helpers', () => {
     expect(loaded.activeTaskId).toBe(task.id)
   })
 
+  it('never persists data-URL attachments in task snapshots', () => {
+    const task = createTask({
+      title: '带图',
+      attachments: ['data:image/png;base64,abc', 'C:\\repo\\a.ts'],
+      messages: [{
+        role: 'user',
+        content: '看图',
+        attachments: ['data:image/png;base64,xyz', 'C:\\repo\\b.ts'],
+      }],
+    })
+    saveTaskSnapshot({ tasks: [task], activeTaskId: task.id })
+    const loaded = loadTaskSnapshot().tasks[0]
+    expect(loaded.attachments).toEqual(['C:\\repo\\a.ts'])
+    expect(loaded.messages[0].attachments).toEqual(['C:\\repo\\b.ts'])
+  })
+
+  it('strips in-flight stream state and normalizes running tasks when saving', () => {
+    const running = createTask({
+      title: '流式中',
+      status: 'running',
+      messages: [{ role: 'user', content: '继续' }],
+      liveMessage: 'partial reply '.repeat(40),
+      liveThought: 'thinking…'.repeat(20),
+      liveEvents: [{ kind: 'tool', title: 'read' }],
+    })
+    const idle = createTask({
+      title: '已完成',
+      status: 'done',
+      liveMessage: 'should keep if not running',
+      liveThought: '',
+    })
+    saveTaskSnapshot({ tasks: [running, idle], activeTaskId: running.id })
+    const loaded = loadTaskSnapshot()
+    const savedRunning = loaded.tasks.find((task) => task.id === running.id)
+    const savedIdle = loaded.tasks.find((task) => task.id === idle.id)
+    expect(savedRunning?.liveMessage).toBe('')
+    expect(savedRunning?.liveThought).toBe('')
+    expect(savedRunning?.liveEvents).toEqual([])
+    expect(savedRunning?.status).toBe('idle')
+    expect(savedRunning?.messages[0]).toEqual({ role: 'user', content: '继续' })
+    expect(savedIdle?.liveMessage).toBe('should keep if not running')
+    expect(savedIdle?.status).toBe('done')
+  })
+
   it('falls back to a blank task when storage is empty or corrupt', () => {
     expect(loadTaskSnapshot().tasks).toHaveLength(1)
     localStorage.setItem('grok-forge-tasks', '{bad json')
@@ -135,8 +184,8 @@ describe('task helpers', () => {
 
   it('filters session panel tasks by title and session ids', () => {
     const tasks = [
-      createTask({ id: 't1', title: '登录修复', acpSessionId: 'sess-abc', sessionKey: 'key-1' }),
-      createTask({ id: 't2', title: '样式调整', acpSessionId: 'sess-xyz', tags: ['ui'] }),
+      createTask({ id: 't1', accountId: 'acc-test-1234', title: '登录修复', acpSessionId: 'sess-abc', sessionKey: 'key-1' }),
+      createTask({ id: 't2', accountId: 'acc-test-1234', title: '样式调整', acpSessionId: 'sess-xyz', tags: ['ui'] }),
     ]
     expect(filterSessionTasks(tasks, '')).toHaveLength(2)
     expect(filterSessionTasks(tasks, '登录').map((task) => task.id)).toEqual(['t1'])
@@ -320,6 +369,9 @@ describe('task helpers', () => {
       toolKind: 'read',
     })
     expect(first[0]).toMatchObject({ content: '读取文件', status: 'in_progress', toolCallId: 'call-1' })
+    expect(typeof first[0].startedAt).toBe('number')
+    expect(first[0].finishedAt).toBeUndefined()
+
     const second = mergeToolIntoPlan(first, {
       kind: 'tool',
       toolCallId: 'call-1',
@@ -329,6 +381,8 @@ describe('task helpers', () => {
     })
     expect(second).toHaveLength(1)
     expect(second[0].status).toBe('completed')
+    expect(second[0].startedAt).toBe(first[0].startedAt)
+    expect(typeof second[0].finishedAt).toBe('number')
     expect(formatStepDuration({ content: 'x', status: 'completed', startedAt: Date.now() - 2500, finishedAt: Date.now() })).toBe('3s')
     expect(formatStepDuration({ content: 'y', status: 'completed' })).toBeUndefined()
     expect(formatStepDuration({
@@ -338,6 +392,17 @@ describe('task helpers', () => {
       finishedAt: Date.now(),
     })).toMatch(/m /)
 
+    // Direct completed/failed still stamps both ends so duration can render.
+    const direct = mergeToolIntoPlan([], {
+      kind: 'tool',
+      toolCallId: 'call-2',
+      title: '快速工具',
+      status: 'completed',
+    })
+    expect(typeof direct[0].startedAt).toBe('number')
+    expect(typeof direct[0].finishedAt).toBe('number')
+    expect(formatStepDuration(direct[0])).toBe('1s')
+
     const failed = mergeToolIntoPlan([], {
       kind: 'tool',
       title: '失败工具',
@@ -345,7 +410,43 @@ describe('task helpers', () => {
       paths: ['a.ts', 'b.ts'],
     })
     expect(failed[0].status).toBe('failed')
+    expect(typeof failed[0].startedAt).toBe('number')
     expect(parsePlanEntries([{ content: '坏步骤', status: 'failed' }])[0].status).toBe('failed')
+  })
+
+  it('preserves plan timestamps and tool rows across plan updates', () => {
+    const t0 = 1_700_000_000_000
+    const withTool = mergeToolIntoPlan([], {
+      kind: 'tool',
+      toolCallId: 't-read',
+      title: '读取文件',
+      status: 'completed',
+    }, t0 + 1_000)
+    // Seed plan after tool so we can assert tools survive the next plan merge.
+    const seeded = mergePlanIntoSteps(withTool, [
+      { content: '分析链路', status: 'in_progress' },
+      { content: '写修复', status: 'pending' },
+    ], t0)
+
+    expect(seeded.map((step) => step.content)).toEqual(['分析链路', '写修复', '读取文件'])
+    expect(seeded[0].startedAt).toBe(t0)
+    expect(seeded[1].startedAt).toBeUndefined()
+    expect(seeded[2].startedAt).toBe(t0 + 1_000)
+
+    const advanced = mergePlanIntoSteps(seeded, [
+      { content: '分析链路', status: 'completed' },
+      { content: '写修复', status: 'in_progress' },
+    ], t0 + 4_000)
+
+    expect(advanced[0].startedAt).toBe(t0)
+    expect(advanced[0].finishedAt).toBe(t0 + 4_000)
+    expect(formatStepDuration(advanced[0], t0 + 4_000)).toBe('4s')
+    expect(advanced[1].startedAt).toBe(t0 + 4_000)
+    expect(advanced.find((step) => step.toolCallId === 't-read')?.content).toBe('读取文件')
+
+    expect(formatDurationMs(2_500)).toBe('3s')
+    // Earliest start t0 → running end t0+5000 (写修复 still in progress)
+    expect(formatStepsTotalDuration(advanced, t0 + 5_000)).toBe('5s')
   })
 
   it('builds attachment prompts and resource blocks', () => {
@@ -430,6 +531,7 @@ describe('task helpers', () => {
     const task = createTask({
       title: '修复 登录/超时',
       status: 'done',
+      accountId: 'acc-test-1234',
       acpSessionId: 'sess-1',
       updatedAt: Date.parse('2026-07-17T00:00:00.000Z'),
       messages: [
@@ -496,6 +598,11 @@ describe('task helpers', () => {
     expect(filterSlashCommands('stop').map((item) => item.command)).toContain('/stop')
     expect(filterSlashCommands('不存在')).toHaveLength(0)
     expect(filterSlashCommands('').length).toBeGreaterThan(0)
+    expect(matchInlineSlashCommands('/he').map((item) => item.command)).toEqual(['/help'])
+    expect(matchInlineSlashCommands('/help extra')).toHaveLength(0)
+    expect(matchInlineSlashCommands('help')).toHaveLength(0)
+    expect(summarizeGitCommit('fix login', true)).toContain('已创建提交')
+    expect(summarizeGitCommit('x', false, '暂存区为空')).toContain('暂存区为空')
     expect(filterCommandPaletteTasks(source, '保留')[0].id).toBe('b')
     expect(filterCommandPaletteTasks(source, '').length).toBe(2)
     expect(() => parseTaskExportPayload('{}')).toThrow(/tasks/)

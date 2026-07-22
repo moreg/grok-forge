@@ -19,9 +19,13 @@
 //!    - [`oauth`] -- browser-based OAuth flow with cross-process + in-process
 //!      dedup.
 //!    - [`oauth_config`] -- BYO OAuth config types parsed out of `config.toml`.
-//!    - [`servers`] -- MCP transport layer (rmcp's `StreamableHttpClientTransport`
-//!      and `TokioChildProcess`) plus client lifecycle, tool invocation, error
-//!      classification, and managed-MCP refresh.
+//!    - [`servers`] -- MCP transport layer (rmcp's `StreamableHttpClientTransport`,
+//!      classic HTTP+SSE via [`classic_sse`], and `TokioChildProcess`) plus
+//!      client lifecycle, tool invocation, error classification, and managed-MCP
+//!      refresh.
+//!    - [`classic_sse`] -- classic MCP HTTP+SSE client (GET `/sse` → `endpoint` →
+//!      POST `/message?sessionId=…`). Needed for JetBrains IDEA and other
+//!      pre-streamable-HTTP servers; rmcp 2.x only ships streamable-HTTP.
 //!    - [`mcp_http_client`] -- backoff wrapper around the HTTP client handed to
 //!      rmcp's streamable-HTTP transport (works around rmcp's zero-backoff SSE
 //!      reconnect loop).
@@ -29,6 +33,7 @@
 pub use rmcp;
 
 pub mod acp_transport;
+pub mod classic_sse;
 pub mod credentials;
 pub mod liveness;
 pub mod mcp_http_client;

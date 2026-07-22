@@ -6,13 +6,21 @@ export type MdInline =
   | { type: 'strong'; children: MdInline[] }
   | { type: 'em'; children: MdInline[] }
   | { type: 'link'; href: string; children: MdInline[] }
+  | { type: 'path'; path: string; line?: number }
   | { type: 'br' }
+
+export type MdListItem = {
+  children: MdInline[]
+  /** true / false for task lists; undefined for plain bullets. */
+  checked?: boolean | null
+}
 
 export type MdBlock =
   | { type: 'paragraph'; children: MdInline[] }
   | { type: 'heading'; level: 1 | 2 | 3 | 4; children: MdInline[] }
   | { type: 'code'; language: string; code: string }
-  | { type: 'list'; ordered: boolean; items: MdInline[][] }
+  | { type: 'list'; ordered: boolean; items: MdListItem[] }
+  | { type: 'table'; header: MdInline[][]; rows: MdInline[][][]; aligns: Array<'left' | 'center' | 'right' | null> }
   | { type: 'blockquote'; children: MdBlock[] }
   | { type: 'hr' }
 
@@ -63,19 +71,113 @@ export function safeMarkdownHref(href: string): string | null {
   return null
 }
 
-function isBlockStart(line: string): boolean {
+/**
+ * Match repo-ish paths like `src/app.ts` or `./foo/bar.tsx:42`.
+ * Requires at least one `/` and a file extension so plain words stay plain.
+ */
+const PATH_TOKEN_RE = /(?:\.\/|\.\.\/)?(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+\.[A-Za-z0-9]{1,12}(?::\d{1,6})?(?::\d{1,6})?/g
+
+/** First path segment looks like a hostname (example.com, localhost). */
+function looksLikeHostnameSegment(segment: string): boolean {
+  const host = segment.replace(/^\.+\//, '').split('/')[0] ?? ''
+  if (!host) return false
+  if (host === 'localhost' || host.startsWith('localhost:')) return true
+  // host.tld or host.tld:port — avoid treating real package paths like `@scope/pkg` (no dot TLD alone)
+  if (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d{1,5})?$/.test(host)) return true
+  return false
+}
+
+/**
+ * Split plain text into text + path nodes so file references are clickable.
+ * Skips URL host/path fragments (e.g. https://example.com/a/b.js).
+ */
+export function linkifyPathsInText(text: string): MdInline[] {
+  if (!text) return []
+  const nodes: MdInline[] = []
+  let last = 0
+  PATH_TOKEN_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = PATH_TOKEN_RE.exec(text)) !== null) {
+    const token = match[0]
+    const start = match.index
+    // Avoid matching inside emails / identifiers.
+    if (start > 0) {
+      const prev = text[start - 1]
+      if (prev && /[A-Za-z0-9_@]/.test(prev)) continue
+    }
+    // Skip anything that continues an open URL (scheme… no whitespace yet),
+    // including port tails like http://localhost:3000/src/main.ts → "3000/src/…".
+    const before = text.slice(0, start)
+    if (/[a-z][a-z0-9+.-]*:\/\/\S*$/i.test(before)) continue
+    // Host-like first segment without scheme still looks like a URL path.
+    if (!token.startsWith('./') && !token.startsWith('../') && looksLikeHostnameSegment(token)) {
+      continue
+    }
+    // Pure numeric first segment is almost never a repo path (port leftovers).
+    const firstSeg = token.replace(/^\.+\//, '').split('/')[0] ?? ''
+    if (/^\d+$/.test(firstSeg)) continue
+    if (start > last) {
+      nodes.push({ type: 'text', text: text.slice(last, start) })
+    }
+    const lineMatch = /^(.*):(\d{1,6})(?::\d{1,6})?$/.exec(token)
+    if (lineMatch && lineMatch[1].includes('/')) {
+      nodes.push({ type: 'path', path: lineMatch[1], line: Number(lineMatch[2]) })
+    } else {
+      nodes.push({ type: 'path', path: token })
+    }
+    last = start + token.length
+  }
+  if (last < text.length) {
+    nodes.push({ type: 'text', text: text.slice(last) })
+  }
+  return nodes.length > 0 ? nodes : [{ type: 'text', text }]
+}
+
+function isTableSeparator(line: string): boolean {
+  const trimmed = line.trim()
+  if (!trimmed.includes('-')) return false
+  // |---|:---:|---| or ---|---
+  return /^\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?$/.test(trimmed) || /^(\s*:?-+:?\s*\|)+\s*:?-+:?\s*$/.test(trimmed)
+}
+
+function splitTableRow(line: string): string[] {
+  let row = line.trim()
+  if (row.startsWith('|')) row = row.slice(1)
+  if (row.endsWith('|')) row = row.slice(0, -1)
+  return row.split('|').map((cell) => cell.trim())
+}
+
+function parseAligns(separator: string): Array<'left' | 'center' | 'right' | null> {
+  return splitTableRow(separator).map((cell) => {
+    const left = cell.startsWith(':')
+    const right = cell.endsWith(':')
+    if (left && right) return 'center'
+    if (right) return 'right'
+    if (left) return 'left'
+    return null
+  })
+}
+
+function isTableStart(line: string, next?: string): boolean {
+  if (!next || !isTableSeparator(next)) return false
+  if (!line.includes('|')) return false
+  return splitTableRow(line).length >= 1
+}
+
+function isBlockStart(line: string, next?: string): boolean {
   if (/^```/.test(line)) return true
   if (/^#{1,4}\s+\S/.test(line)) return true
   if (/^\s*([-*+]|\d+\.)\s+\S/.test(line)) return true
   if (/^>\s?/.test(line)) return true
   if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line.trim())) return true
+  if (isTableStart(line, next)) return true
   return false
 }
 
 /**
  * Parse a subset of CommonMark-ish Markdown into blocks.
- * Supports: fenced code, headings, lists, blockquotes, hr, paragraphs,
- * and inline bold/italic/code/links/hard breaks.
+ * Supports: fenced code, headings, lists (incl. task lists), tables, blockquotes, hr, paragraphs,
+ * and inline bold/italic/code/links/hard breaks/path refs.
  */
 export function parseMarkdown(source: string): MdBlock[] {
   const text = source.replace(/\r\n/g, '\n')
@@ -115,12 +217,44 @@ export function parseMarkdown(source: string): MdBlock[] {
       continue
     }
 
-    if (/^\s*([-*+]|\d+\.)\s+\S/.test(line)) {
+    if (isTableStart(line, lines[i + 1])) {
+      const header = splitTableRow(line).map((cell) => parseInline(cell))
+      const aligns = parseAligns(lines[i + 1])
+      i += 2
+      const rows: MdInline[][][] = []
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() && !isBlockStart(lines[i], lines[i + 1])) {
+        // stop if this looks like a new non-table construct
+        if (/^```/.test(lines[i]) || /^#{1,4}\s/.test(lines[i]) || /^>\s?/.test(lines[i])) break
+        if (/^\s*([-*+]|\d+\.)\s+\S/.test(lines[i])) break
+        rows.push(splitTableRow(lines[i]).map((cell) => parseInline(cell)))
+        i += 1
+      }
+      // Normalize column counts to header length
+      const cols = header.length
+      const normalizedAligns = Array.from({ length: cols }, (_, index) => aligns[index] ?? null)
+      blocks.push({
+        type: 'table',
+        header,
+        rows: rows.map((row) => Array.from({ length: cols }, (_, index) => row[index] ?? [{ type: 'text', text: '' }])),
+        aligns: normalizedAligns,
+      })
+      continue
+    }
+
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
       const ordered = /^\s*\d+\./.test(line)
-      const items: MdInline[][] = []
+      const items: MdListItem[] = []
       while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
         const itemText = lines[i].replace(/^\s*([-*+]|\d+\.)\s+/, '')
-        items.push(parseInline(itemText))
+        const task = /^\[([ xX])\]\s+(.*)$/.exec(itemText)
+        if (task) {
+          items.push({
+            checked: task[1].toLowerCase() === 'x',
+            children: parseInline(task[2]),
+          })
+        } else {
+          items.push({ children: parseInline(itemText) })
+        }
         i += 1
       }
       blocks.push({ type: 'list', ordered, items })
@@ -147,7 +281,7 @@ export function parseMarkdown(source: string): MdBlock[] {
     }
 
     const paraLines: string[] = []
-    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i], lines[i + 1])) {
       paraLines.push(lines[i])
       i += 1
     }
@@ -167,19 +301,28 @@ export function parseMarkdown(source: string): MdBlock[] {
   return blocks
 }
 
-/** Inline parser for emphasis, code spans, and links. */
+function pushTextWithPaths(nodes: MdInline[], text: string) {
+  if (!text) return
+  const parts = linkifyPathsInText(text)
+  for (const part of parts) {
+    if (part.type === 'text') {
+      const last = nodes[nodes.length - 1]
+      if (last?.type === 'text') {
+        last.text += part.text
+        continue
+      }
+    }
+    nodes.push(part)
+  }
+}
+
+/** Inline parser for emphasis, code spans, links, and path refs. */
 export function parseInline(source: string): MdInline[] {
   const nodes: MdInline[] = []
   let i = 0
 
   const pushText = (text: string) => {
-    if (!text) return
-    const last = nodes[nodes.length - 1]
-    if (last?.type === 'text') {
-      last.text += text
-      return
-    }
-    nodes.push({ type: 'text', text })
+    pushTextWithPaths(nodes, text)
   }
 
   while (i < source.length) {
@@ -284,5 +427,7 @@ export function looksLikeMarkdown(source: string): boolean {
   if (/\*\*[^*]+\*\*/.test(source) || /`[^`]+`/.test(source)) return true
   if (/\[[^\]]+\]\([^)]+\)/.test(source)) return true
   if (/^>\s?\S/m.test(source)) return true
+  if (/\|.+\|/.test(source) && /\|?\s*:?-+:?\s*\|/.test(source)) return true
+  if (/^\s*[-*+]\s+\[[ xX]\]\s+/m.test(source)) return true
   return false
 }

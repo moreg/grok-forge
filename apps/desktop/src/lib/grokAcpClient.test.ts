@@ -35,10 +35,17 @@ class FakeTransport implements GrokTransport {
   }
 }
 
+function createClient(transport: GrokTransport, timeoutMs?: number) {
+  const client = new GrokAcpClient(transport, timeoutMs)
+  client.setAccountId('acc-test-1234')
+  client.setTaskAccountId('acc-test-1234')
+  return client
+}
+
 describe('GrokAcpClient', () => {
   it('initializes ACP and creates a workspace session', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
 
     await expect(client.connect('E:\\repo')).resolves.toEqual({ sessionId: 'session-42', restored: false })
 
@@ -49,7 +56,7 @@ describe('GrokAcpClient', () => {
 
   it('injects preferred model into session/new and session/setModel', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     client.setPreferredModel('grok-4.5')
 
     await client.connect('E:\\repo')
@@ -86,7 +93,7 @@ describe('GrokAcpClient', () => {
       const result = method === 'session/new' ? { sessionId: 'session-42' } : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ jsonrpc: '2.0', id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
     await expect(client.setSessionModel('grok-4')).resolves.toMatchObject({
       applied: false,
@@ -116,7 +123,7 @@ describe('GrokAcpClient', () => {
             : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ jsonrpc: '2.0', id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await expect(client.connect('E:\\repo', 'task-1', [], 'sess_old')).resolves.toEqual({
       sessionId: 'sess_old',
       restored: true,
@@ -130,7 +137,7 @@ describe('GrokAcpClient', () => {
     const listSpy = vi.spyOn(bridge, 'terminalList').mockResolvedValue([
       { terminalId: 't1', name: 'cmd', status: 'running', output: '', truncated: false },
     ])
-    const client = new GrokAcpClient(new FakeTransport())
+    const client = createClient(new FakeTransport())
     await expect(client.listLocalTerminals()).resolves.toHaveLength(1)
     listSpy.mockRejectedValueOnce(new Error('offline'))
     await expect(client.listLocalTerminals()).resolves.toEqual([])
@@ -154,7 +161,7 @@ describe('GrokAcpClient', () => {
           : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ jsonrpc: '2.0', id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await expect(client.connect('E:\\repo', 'task-2', [], 'sess_missing')).resolves.toEqual({
       sessionId: 'session-fresh',
       restored: false,
@@ -163,7 +170,7 @@ describe('GrokAcpClient', () => {
 
   it('submits prompts against the active session', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
 
     await client.prompt('检查测试')
@@ -182,7 +189,7 @@ describe('GrokAcpClient', () => {
     const readSpy = vi.spyOn(bridge, 'readTextFile').mockResolvedValue('hello')
     const writeSpy = vi.spyOn(bridge, 'writeTextFile').mockResolvedValue(undefined)
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
     const events: unknown[] = []
     client.onEvent((event) => events.push(event))
@@ -222,7 +229,7 @@ describe('GrokAcpClient', () => {
     const killSpy = vi.spyOn(bridge, 'terminalKill').mockResolvedValue(undefined)
     const releaseSpy = vi.spyOn(bridge, 'terminalRelease').mockResolvedValue(undefined)
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
 
     transport.listener({
@@ -255,7 +262,7 @@ describe('GrokAcpClient', () => {
 
   it('handles permission requests, replies, and cancel notifications', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
     const events: unknown[] = []
     client.onEvent((event) => events.push(event))
@@ -291,7 +298,7 @@ describe('GrokAcpClient', () => {
 
   it('reuses per-task sessions instead of recreating them', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo', 'task-a')
     await client.ensureSession('task-a')
     await client.ensureSession('task-b')
@@ -314,7 +321,7 @@ describe('GrokAcpClient', () => {
                 : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ jsonrpc: '2.0', id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
 
     await expect(client.loadWorkspaceData()).resolves.toMatchObject({
@@ -353,7 +360,7 @@ describe('GrokAcpClient', () => {
       const result = method === 'session/new' ? { sessionId: 'session-42' } : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
     await expect(client.loadWorkspaceData()).resolves.toEqual({
       branch: 'feature/local',
@@ -387,7 +394,7 @@ describe('GrokAcpClient', () => {
               : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('.')
 
     await expect(client.loadWorkspaceData()).resolves.toEqual({
@@ -404,7 +411,7 @@ describe('GrokAcpClient', () => {
     const bridge = await import('./desktopBridge')
     const localSpy = vi.spyOn(bridge, 'gitWorkspaceStatus').mockRejectedValue(new Error('浏览器预览'))
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await expect(client.loadWorkspaceData()).rejects.toThrow('Grok 会话尚未建立')
     await client.connect('.')
     transport.send = async (payload) => {
@@ -424,7 +431,7 @@ describe('GrokAcpClient', () => {
 
   it('forwards normalized streaming updates to subscribers', async () => {
     const transport = new FakeTransport()
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     const subscriber = vi.fn()
     client.onEvent(subscriber)
     await client.connect('E:\\repo')
@@ -480,7 +487,7 @@ describe('GrokAcpClient', () => {
           : { protocolVersion: 1 }
       queueMicrotask(() => transport.listener({ id: message.id, result }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
     const usage = await client.fetchBilling()
     expect(usage).toMatchObject({
@@ -498,7 +505,7 @@ describe('GrokAcpClient', () => {
       const message = payload as Record<string, unknown>
       queueMicrotask(() => transport.listener({ id: message.id, error: { message: 'Unauthorized' } }))
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
 
     await expect(client.prompt('hello')).rejects.toThrow('Grok 会话尚未建立')
     await expect(client.connect('E:\\repo')).rejects.toThrow('Unauthorized')
@@ -511,7 +518,7 @@ describe('GrokAcpClient', () => {
       transport.listener = listener
       return unlisten
     }
-    const client = new GrokAcpClient(transport)
+    const client = createClient(transport)
     await client.connect('E:\\repo')
 
     await client.disconnect()
@@ -527,15 +534,15 @@ describe('GrokAcpClient', () => {
       const result = message.method === 'session/new' ? {} : { protocolVersion: 1 }
       queueMicrotask(() => missingSession.listener({ id: message.id, result }))
     }
-    await expect(new GrokAcpClient(missingSession).connect('.')).rejects.toThrow('Grok 未返回会话 ID')
+    await expect(createClient(missingSession).connect('.')).rejects.toThrow('Grok 未返回会话 ID')
 
     const sendFailure = new FakeTransport()
     sendFailure.send = async () => { throw 'offline' }
-    await expect(new GrokAcpClient(sendFailure).connect('.')).rejects.toThrow('offline')
+    await expect(createClient(sendFailure).connect('.')).rejects.toThrow('offline')
 
     const pending = new FakeTransport()
     pending.send = async (payload) => { pending.sent.push(payload as Record<string, unknown>) }
-    const pendingClient = new GrokAcpClient(pending, 5_000)
+    const pendingClient = createClient(pending, 5_000)
     const connecting = pendingClient.connect('.')
     const disconnected = expect(connecting).rejects.toThrow('Grok 会话已关闭')
     await vi.waitFor(() => expect(pending.sent).toHaveLength(1))
@@ -545,7 +552,7 @@ describe('GrokAcpClient', () => {
     vi.useFakeTimers()
     const timedOut = new FakeTransport()
     timedOut.send = async () => undefined
-    const timeoutClient = new GrokAcpClient(timedOut, 10)
+    const timeoutClient = createClient(timedOut, 10)
     const timedConnection = timeoutClient.connect('.')
     const timeoutExpectation = expect(timedConnection).rejects.toThrow('Grok 请求超时：initialize')
     await Promise.resolve()
