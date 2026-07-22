@@ -264,6 +264,8 @@ export function ConversationPane({
   displayTaskIdRef.current = task.id
   /** True while an ACP prompt turn is open (blocks late chunks after finalize). */
   const streamOpenRef = useRef(false)
+  /** Monotonic id so concurrent/stale billing polls cannot overwrite newer results. */
+  const billingRefreshSeqRef = useRef(0)
   const promptGenerationRef = useRef(0)
   const approvalModeRef = useRef(approvalMode)
   const autoReconnectRef = useRef(autoReconnect)
@@ -457,19 +459,28 @@ export function ConversationPane({
       onBillingRefreshingChange?.(false)
       return
     }
+    const seq = ++billingRefreshSeqRef.current
     onBillingRefreshingChange?.(true)
     try {
       const usage = await client.fetchBilling()
-      onBillingChange?.(usage)
+      // Drop stale responses from overlapping manual / interval polls.
+      if (seq !== billingRefreshSeqRef.current) return
+      // Only apply a successful snapshot. Null/parse-miss and thrown errors keep
+      // the last good meter so a blip does not flash offline fake usage.
+      if (usage) onBillingChange?.(usage)
     } catch {
-      onBillingChange?.(null)
+      // keep previous billing snapshot
     } finally {
-      onBillingRefreshingChange?.(false)
+      if (seq === billingRefreshSeqRef.current) {
+        onBillingRefreshingChange?.(false)
+      }
     }
   }, [onBillingChange, onBillingRefreshingChange])
 
   const disconnect = async (intentional = true) => {
     intentionalDisconnectRef.current = intentional
+    // Invalidate in-flight billing polls so they cannot re-apply after clear.
+    billingRefreshSeqRef.current += 1
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
@@ -486,6 +497,7 @@ export function ConversationPane({
     setConnected(false)
     onConnectionChange?.(false)
     onBillingChange?.(null)
+    onBillingRefreshingChange?.(false)
   }
 
   const connect = async () => {
@@ -567,7 +579,9 @@ export function ConversationPane({
       onAccountAuthStatus?.(selectedAccountId, connectionFailure.status)
       setConnected(false)
       onConnectionChange?.(false)
+      billingRefreshSeqRef.current += 1
       onBillingChange?.(null)
+      onBillingRefreshingChange?.(false)
       await candidateClient.disconnect().catch(() => undefined)
       if (clientRef.current === candidateClient) clientRef.current = null
       if (connectionFailure.kind === 'network' && autoReconnectRef.current && !intentionalDisconnectRef.current) {

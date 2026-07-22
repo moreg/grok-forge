@@ -1124,6 +1124,24 @@ describe('Grok Forge workspace', () => {
     await user.click(screen.getByRole('button', { name: '更新用量数据' }))
     await act(async () => { await Promise.resolve() })
     expect(acpMocks.fetchBilling).toHaveBeenCalled()
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('38% 本周额度')
+
+    // Transient failure / null payload must keep the last good live snapshot.
+    acpMocks.fetchBilling.mockClear()
+    acpMocks.fetchBilling.mockRejectedValueOnce(new Error('billing timeout'))
+    await user.click(screen.getByRole('button', { name: '更新用量数据' }))
+    await act(async () => { await Promise.resolve() })
+    expect(acpMocks.fetchBilling).toHaveBeenCalled()
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('SuperGrok')
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('38% 本周额度')
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('实时')
+
+    acpMocks.fetchBilling.mockClear()
+    acpMocks.fetchBilling.mockResolvedValueOnce(null)
+    await user.click(screen.getByRole('button', { name: '更新用量数据' }))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('38% 本周额度')
+    expect(screen.getByLabelText('工作区资料')).toHaveTextContent('实时')
   })
 
   it('imports tasks, filters commands, and switches split multi-file review', async () => {
