@@ -31,6 +31,7 @@ type OverlayProps = {
   connected: boolean
   approvalMode: ApprovalMode
   autoReconnect: boolean
+  autoConnectOnDialogue: boolean
   theme: ThemeMode
   fontScale: FontScale
   preferredModel: string
@@ -46,6 +47,7 @@ type OverlayProps = {
   onClose: () => void
   onApprovalMode: (mode: ApprovalMode) => void
   onAutoReconnect: (enabled: boolean) => void
+  onAutoConnectOnDialogue: (enabled: boolean) => void
   onTheme: (theme: ThemeMode) => void
   onFontScale: (scale: FontScale) => void
   onPreferredModel: (modelId: string) => void
@@ -145,6 +147,7 @@ export function Overlay({
   connected,
   approvalMode,
   autoReconnect,
+  autoConnectOnDialogue,
   theme,
   fontScale,
   preferredModel,
@@ -160,6 +163,7 @@ export function Overlay({
   onClose,
   onApprovalMode,
   onAutoReconnect,
+  onAutoConnectOnDialogue,
   onTheme,
   onFontScale,
   onPreferredModel,
@@ -200,6 +204,7 @@ export function Overlay({
   connected: boolean
   approvalMode: ApprovalMode
   autoReconnect: boolean
+  autoConnectOnDialogue: boolean
   theme: ThemeMode
   fontScale: FontScale
   preferredModel: string
@@ -215,6 +220,7 @@ export function Overlay({
   onClose: () => void
   onApprovalMode: (mode: ApprovalMode) => void
   onAutoReconnect: (enabled: boolean) => void
+  onAutoConnectOnDialogue: (enabled: boolean) => void
   onTheme: (theme: ThemeMode) => void
   onFontScale: (scale: FontScale) => void
   onPreferredModel: (modelId: string) => void
@@ -503,6 +509,16 @@ export function Overlay({
                       <div className="setting-actions" role="group" aria-label="自动连接">
                         <button type="button" aria-label="开启自动连接" className={autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(true)}>开启</button>
                         <button type="button" aria-label="关闭自动连接" className={!autoReconnect ? 'active' : ''} onClick={() => onAutoReconnect(false)}>关闭</button>
+                      </div>
+                    </div>
+                    <div className="setting-row">
+                      <div className="setting-copy">
+                        <span>对话时连接</span>
+                        <small>默认关闭；开启后打开任务/发送消息时自动连接，不主动重连断线</small>
+                      </div>
+                      <div className="setting-actions" role="group" aria-label="对话时连接">
+                        <button type="button" aria-label="开启对话时连接" className={autoConnectOnDialogue ? 'active' : ''} onClick={() => onAutoConnectOnDialogue(true)}>开启</button>
+                        <button type="button" aria-label="关闭对话时连接" className={!autoConnectOnDialogue ? 'active' : ''} onClick={() => onAutoConnectOnDialogue(false)}>关闭</button>
                       </div>
                     </div>
                     <div className="setting-row">

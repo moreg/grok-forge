@@ -55,6 +55,7 @@ const ACTIVE_KEY = 'grok-forge-active-task'
 const MODE_KEY = 'grok-forge-approval-mode'
 const WORKSPACES_KEY = 'grok-forge-workspaces'
 const AUTO_RECONNECT_KEY = 'grok-forge-auto-reconnect'
+const AUTO_CONNECT_ON_DIALOGUE_KEY = 'grok-forge-auto-connect-on-dialogue'
 const THEME_KEY = 'grok-forge-theme'
 const FONT_SCALE_KEY = 'grok-forge-font-scale'
 const MODEL_KEY = 'grok-forge-model'
@@ -425,6 +426,17 @@ export function loadAutoReconnect(): boolean {
 
 export function saveAutoReconnect(enabled: boolean) {
   localStorage.setItem(AUTO_RECONNECT_KEY, enabled ? '1' : '0')
+}
+
+/** Default OFF — connect only when user explicitly starts a conversation (send message). */
+export function loadAutoConnectOnDialogue(): boolean {
+  const value = localStorage.getItem(AUTO_CONNECT_ON_DIALOGUE_KEY)
+  if (value === null) return false
+  return value === '1'
+}
+
+export function saveAutoConnectOnDialogue(enabled: boolean) {
+  localStorage.setItem(AUTO_CONNECT_ON_DIALOGUE_KEY, enabled ? '1' : '0')
 }
 
 export function loadTheme(): ThemeMode {

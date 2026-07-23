@@ -198,6 +198,7 @@ export function ConversationPane({
   onHighlightConsumed,
   onAccountAuthStatus,
   onAccountConnectionError,
+  autoConnectOnDialogue,
 }: {
   task: Task
   accountId: string | null
@@ -224,6 +225,7 @@ export function ConversationPane({
   commandDraft: string
   onCommandDraftConsumed: () => void
   autoReconnect: boolean
+  autoConnectOnDialogue: boolean
   preferredModel: string
   desktopNotifications: boolean
   shortcuts: ShortcutMap
@@ -276,6 +278,7 @@ export function ConversationPane({
   const sendPromptRef = useRef<(text: string, files?: string[]) => void>(() => undefined)
   const connectRef = useRef<() => Promise<void>>(async () => undefined)
   const preferredModelRef = useRef(preferredModel)
+  const autoConnectOnDialogueRef = useRef(autoConnectOnDialogue)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const stopTaskRef = useRef<() => Promise<void>>(async () => undefined)
   const workspacePathRef = useRef(workspacePath)
@@ -310,6 +313,7 @@ export function ConversationPane({
   }
   approvalModeRef.current = approvalMode
   autoReconnectRef.current = autoReconnect
+  autoConnectOnDialogueRef.current = autoConnectOnDialogue
   preferredModelRef.current = preferredModel
   notificationsRef.current = desktopNotifications
   workspacePathRef.current = workspacePath
@@ -676,6 +680,7 @@ export function ConversationPane({
   const openConnectArmedRef = useRef(true)
   const prevWorkspacePathRef = useRef(workspacePath)
   const prevAutoReconnectRef = useRef(autoReconnect)
+  const prevAutoConnectOnDialogueRef = useRef(autoConnectOnDialogue)
 
   useEffect(() => {
     const previous = prevWorkspacePathRef.current
@@ -699,7 +704,17 @@ export function ConversationPane({
   }, [autoReconnect])
 
   useEffect(() => {
-    if (!autoReconnect) return
+    const wasOnDialogue = prevAutoConnectOnDialogueRef.current
+    prevAutoConnectOnDialogueRef.current = autoConnectOnDialogue
+    if (!wasOnDialogue && autoConnectOnDialogue) {
+      // User re-enabled dialogue-connect: allow one fresh open attempt.
+      openConnectArmedRef.current = true
+      intentionalDisconnectRef.current = false
+    }
+  }, [autoConnectOnDialogue])
+
+  useEffect(() => {
+    if (!autoReconnect && !autoConnectOnDialogue) return
     if (backend.mode !== 'native' || !workspacePath) return
     if (!accountId || !task.accountId || task.accountId !== accountId) return
     if (!openConnectArmedRef.current) return
@@ -707,7 +722,7 @@ export function ConversationPane({
     if (intentionalDisconnectRef.current) return
     openConnectArmedRef.current = false
     void connectRef.current()
-  }, [accountId, autoReconnect, backend.mode, task.accountId, workspacePath])
+  }, [accountId, autoReconnect, autoConnectOnDialogue, backend.mode, task.accountId, workspacePath])
 
   useEffect(() => {
     if (!autoReconnect || backend.mode !== 'native') return
@@ -837,6 +852,10 @@ export function ConversationPane({
   }
 
   const sendPrompt = (prompt: string, extraAttachments: string[] = attachments) => {
+    if (!connected && autoConnectOnDialogueRef.current) {
+      void connectRef.current().catch(() => {})
+    }
+
     if (task.status === 'running' || streamOpenRef.current) {
       setConnectionError('当前任务仍在执行，请先停止或等待完成后再发送。')
       return

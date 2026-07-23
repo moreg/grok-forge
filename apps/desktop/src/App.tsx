@@ -26,6 +26,7 @@ import {
   importTasksSnapshot,
   listTasks,
   loadApprovalMode,
+  loadAutoConnectOnDialogue,
   loadAutoReconnect,
   loadFontScale,
   loadPreferredModel,
@@ -37,6 +38,7 @@ import {
   parseTaskExportPayload,
   rememberWorkspace,
   saveApprovalMode,
+  saveAutoConnectOnDialogue,
   saveAutoReconnect,
   saveFontScale,
   savePreferredModel,
@@ -133,6 +135,7 @@ export default function App() {
   const [commandDraft, setCommandDraft] = useState('')
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => loadMcpServers())
   const [autoReconnect, setAutoReconnect] = useState(() => loadAutoReconnect())
+  const [autoConnectOnDialogue, setAutoConnectOnDialogue] = useState(() => loadAutoConnectOnDialogue())
   const [theme, setTheme] = useState<ThemeMode>(() => loadTheme())
   const [fontScale, setFontScale] = useState<FontScale>(() => loadFontScale())
   const [preferredModel, setPreferredModel] = useState(() => loadPreferredModel())
@@ -709,6 +712,11 @@ export default function App() {
     saveAutoReconnect(enabled)
   }
 
+  const changeAutoConnectOnDialogue = (enabled: boolean) => {
+    setAutoConnectOnDialogue(enabled)
+    saveAutoConnectOnDialogue(enabled)
+  }
+
   const changeFontScale = (next: FontScale) => {
     setFontScale(next)
     saveFontScale(next)
@@ -890,6 +898,7 @@ export default function App() {
         commandDraft={commandDraft}
         onCommandDraftConsumed={() => setCommandDraft('')}
         autoReconnect={autoReconnect}
+        autoConnectOnDialogue={autoConnectOnDialogue}
         preferredModel={preferredModel}
         desktopNotifications={desktopNotifications}
         shortcuts={shortcuts}
@@ -928,6 +937,7 @@ export default function App() {
           connected={connected}
           approvalMode={approvalMode}
           autoReconnect={autoReconnect}
+          autoConnectOnDialogue={autoConnectOnDialogue}
           theme={theme}
           fontScale={fontScale}
           preferredModel={preferredModel}
@@ -946,6 +956,7 @@ export default function App() {
           }}
           onApprovalMode={changeApprovalMode}
           onAutoReconnect={changeAutoReconnect}
+          onAutoConnectOnDialogue={changeAutoConnectOnDialogue}
           onTheme={changeTheme}
           onFontScale={changeFontScale}
           onPreferredModel={changePreferredModel}
