@@ -109,10 +109,12 @@ const MessageRow = memo(function MessageRow({
         id={`chat-msg-${index}`}
         data-message-index={index}
       >
-        {message.content.trim() ? (
-          <MarkdownView source={message.content} className="md-user" />
-        ) : null}
-        <MessageAttachments attachments={message.attachments} />
+        <div className="message-content">
+          {message.content.trim() ? (
+            <MarkdownView source={message.content} className="md-user" />
+          ) : null}
+          <MessageAttachments attachments={message.attachments} />
+        </div>
         <MessageCopyButton text={message.content} label="复制消息" />
       </div>
     )

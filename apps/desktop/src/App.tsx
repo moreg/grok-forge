@@ -37,6 +37,7 @@ import {
   mergeToolIntoPlan,
   parseTaskExportPayload,
   rememberWorkspace,
+  saveWorkspaces,
   saveApprovalMode,
   saveAutoConnectOnDialogue,
   saveAutoReconnect,
@@ -75,6 +76,7 @@ import {
   saveLayoutWidths,
   saveShortcuts,
   saveWorkspaceProfile,
+  notifyUserError,
   showDesktopNotification,
 } from './lib/prefs'
 import type { AccountsState, Account } from './lib/accounts'
@@ -265,7 +267,10 @@ export default function App() {
       void inspectAccountCredential(accountId).then((inspection) => {
         updateAccount(accountId, { renewal: inspection.renewal, authStatus: inspection.authStatus })
         setAccounts(loadAccounts())
-      }).catch(() => undefined)
+      }).catch((error) => {
+        console.error('Credential inspection failed:', error)
+        void notifyUserError('错误', '凭证检查失败，请重试。')
+      })
     }
   }, [])
 
@@ -304,7 +309,7 @@ export default function App() {
       if (!target) return
       if (!target.accountId) {
         if (!accounts.currentAccountId) {
-          window.alert('请先添加账号，再绑定此历史任务。')
+          void notifyUserError('错误', '请先添加账号，再绑定此历史任务。')
           return
         }
         if (!window.confirm('此历史任务尚未归属账号，是否绑定到当前账号？')) return
@@ -319,7 +324,7 @@ export default function App() {
           setTasks((current) => current.map((task) => task.id === taskId
             ? { ...task, accountId: null, acpSessionId: undefined, sessionKey: task.id }
             : task))
-          window.alert('任务原账号已不存在，任务已转为未归属。')
+          void notifyUserError('错误', '任务原账号已不存在，任务已转为未归属。')
           return
         }
         if (!window.confirm(`此任务属于账号“${owner.name}”，是否先切换账号？`)) return
@@ -381,15 +386,19 @@ export default function App() {
   // Keep a ref so unmount can flush the latest state without writing on every cleanup.
   const snapshotRef = useRef({ tasks, activeTaskId })
   snapshotRef.current = { tasks, activeTaskId }
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      saveTaskSnapshot(snapshotRef.current)
-    }, 300)
-    return () => window.clearTimeout(timer)
-  }, [tasks, activeTaskId])
-  useEffect(() => () => {
+
+  const saveSnapshot = useCallback(() => {
     saveTaskSnapshot(snapshotRef.current)
   }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(saveSnapshot, 300)
+    return () => window.clearTimeout(timer)
+  }, [tasks, activeTaskId, saveSnapshot])
+
+  useEffect(() => () => {
+    saveSnapshot()
+  }, [saveSnapshot])
 
   useEffect(() => {
     applyAppearance(theme, fontScale)
@@ -432,13 +441,20 @@ export default function App() {
 
   // Auto-close the review pane on narrow viewports until the user explicitly toggles it.
   useEffect(() => {
+    let resizeTimer: ReturnType<typeof window.setTimeout> | undefined
     const onResize = () => {
+      if (resizeTimer !== undefined) window.clearTimeout(resizeTimer)
       if (reviewUserToggledRef.current) return
-      const wide = !shouldAutoCloseReview(window.innerWidth)
-      setReviewOpen(wide)
+      resizeTimer = window.setTimeout(() => {
+        const wide = !shouldAutoCloseReview(window.innerWidth)
+        setReviewOpen(wide)
+      }, 150)
     }
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (resizeTimer !== undefined) window.clearTimeout(resizeTimer)
+    }
   }, [])
 
   const openReview = useCallback(() => {
@@ -536,6 +552,10 @@ export default function App() {
     localStorage.setItem('grok-forge-workspace', path)
     setWorkspaces(rememberWorkspace(path))
   }
+
+  const updateWorkspaceOrder = useCallback((newOrder: string[]) => {
+    setWorkspaces(saveWorkspaces(newOrder))
+  }, [])
 
   const chooseWorkspace = async () => {
     const selected = await selectWorkspace(workspacePath || undefined)
@@ -871,6 +891,8 @@ export default function App() {
           if (!connected) return
           window.dispatchEvent(new CustomEvent('grok-forge-refresh-billing'))
         }}
+        // New: enable manual drag-and-drop reordering of the project list
+        onReorderWorkspaces={updateWorkspaceOrder}
       />
       <ResizeHandle ariaLabel="调整侧边栏宽度" onDrag={onSidebarResize} onDragEnd={persistLayout} />
       <ConversationPane

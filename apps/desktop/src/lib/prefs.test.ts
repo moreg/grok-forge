@@ -35,6 +35,7 @@ import {
   saveLayoutWidths,
   saveShortcuts,
   saveWorkspaceProfile,
+  notifyUserError,
   showDesktopNotification,
 } from './prefs'
 
@@ -156,6 +157,14 @@ describe('prefs helpers', () => {
 
     vi.stubGlobal('Notification', undefined)
     await expect(showDesktopNotification('A', 'B', true)).resolves.toBe(false)
+  })
+
+  it('falls back to alert when notifyUserError cannot show a notification', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+    vi.stubGlobal('Notification', undefined)
+    await notifyUserError('错误', '凭证检查失败，请重试。')
+    expect(alertSpy).toHaveBeenCalledWith('错误\n凭证检查失败，请重试。')
+    alertSpy.mockRestore()
   })
 
   it('ignores pure modifier key events when recording bindings', () => {

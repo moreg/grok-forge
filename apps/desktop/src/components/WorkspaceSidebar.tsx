@@ -1,4 +1,4 @@
-import { type MouseEvent, memo, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -68,6 +68,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   billing = null,
   billingRefreshing = false,
   onRefreshBilling,
+  // New: support drag-and-drop reordering of the workspace list (click does not reorder; drag moves item to target position)
+  onReorderWorkspaces
 }: {
   workspacePath: string
   workspaces: string[]
@@ -99,6 +101,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   billing?: BillingUsage | null
   billingRefreshing?: boolean
   onRefreshBilling?: () => void
+  // New: support drag-and-drop reordering of the workspace list (click does not reorder; drag moves item to target position)
+  onReorderWorkspaces?: (newOrder: string[]) => void
 }) {
   const [nowTick, setNowTick] = useState(() => Date.now())
   useEffect(() => {
@@ -109,8 +113,15 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   const workspaceName = workspacePath.split(/[\\/]/).filter(Boolean).at(-1) ?? '选择工作区'
   const allTags = useMemo(() => collectTaskTags(tasks), [tasks])
   const archivedCount = useMemo(() => countArchivedTasks(tasks), [tasks])
-  const sorted = listTasks(tasks, search, tagFilter, { includeArchived: showArchived })
-  const recent = workspaces.filter((path) => path !== workspacePath).slice(0, 5)
+  const sorted = useMemo(
+    () => listTasks(tasks, search, tagFilter, { includeArchived: showArchived }),
+    [tasks, search, tagFilter, showArchived],
+  )
+  // Full non-current list so drag-reorder can reach every saved workspace (max 8 total).
+  const otherWorkspaces = useMemo(
+    () => workspaces.filter((path) => path !== workspacePath),
+    [workspaces, workspacePath],
+  )
   const [menuTaskId, setMenuTaskId] = useState<string | null>(null)
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 })
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -122,6 +133,11 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       return false
     }
   })
+
+  const [draggedPath, setDraggedPath] = useState<string | null>(null)
+  const [overPath, setOverPath] = useState<string | null>(null)
+
+  const conversationsRef = useRef<HTMLDivElement>(null)
 
   const toggleConversationsCollapsed = () => {
     setConversationsCollapsed((prev) => {
@@ -145,6 +161,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       window.removeEventListener('scroll', close, true)
     }
   }, [menuTaskId])
+
+  // Reset conversation list scroll only when filters change (not on every tasks patch).
+  useEffect(() => {
+    const container = conversationsRef.current
+    if (container) container.scrollTop = 0
+  }, [search, tagFilter, showArchived])
 
   const openTaskMenu = (event: MouseEvent, taskId: string) => {
     event.preventDefault()
@@ -219,14 +241,51 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             {conversationsCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
           </button>
         </div>
-        {recent.map((path) => {
+        {otherWorkspaces.map((path) => {
           const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+          const isDragging = draggedPath === path
+          const isOver = overPath === path && draggedPath !== path
           return (
             <button
               key={path}
               type="button"
-              className="workspace-card"
+              className={`workspace-card${isDragging ? ' is-dragging' : ''}${isOver ? ' is-drag-over' : ''}`}
               aria-label={`切换工作区 ${name}`}
+              draggable={Boolean(onReorderWorkspaces)}
+              onDragStart={(e) => {
+                if (!onReorderWorkspaces) return
+                e.dataTransfer.setData('text/plain', path)
+                e.dataTransfer.effectAllowed = 'move'
+                setDraggedPath(path)
+              }}
+              onDragEnd={() => {
+                setDraggedPath(null)
+                setOverPath(null)
+              }}
+              onDragOver={(e) => {
+                if (!onReorderWorkspaces || !draggedPath || draggedPath === path) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                if (overPath !== path) setOverPath(path)
+              }}
+              onDragLeave={() => {
+                setOverPath((cur) => (cur === path ? null : cur))
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setOverPath(null)
+                setDraggedPath(null)
+                const sourcePath = e.dataTransfer.getData('text/plain')
+                if (!sourcePath || sourcePath === path) return
+                const currentIndex = workspaces.findIndex((p) => p === path)
+                const draggedIndex = workspaces.findIndex((p) => p === sourcePath)
+                if (currentIndex === -1 || draggedIndex === -1 || draggedIndex === currentIndex) return
+                const newOrder = [...workspaces]
+                const [dragged] = newOrder.splice(draggedIndex, 1)
+                const insertAt = draggedIndex < currentIndex ? currentIndex - 1 : currentIndex
+                newOrder.splice(insertAt, 0, dragged)
+                onReorderWorkspaces?.(newOrder)
+              }}
               onClick={() => onPickWorkspace(path)}
             >
               <div className="workspace-icon"><FolderGit2 size={16} /></div>
@@ -239,7 +298,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
         })}
       </div>
 
-      <div className={`sidebar-section conversations ${conversationsCollapsed ? 'is-collapsed' : ''}`}>
+      <div
+        ref={conversationsRef}
+        className={`sidebar-section conversations ${conversationsCollapsed ? 'is-collapsed' : ''}`}
+      >
         <div className="section-label">
           最近任务
           <div className="section-label-actions">
@@ -582,5 +644,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   && prev.onOpenSessions === next.onOpenSessions
   && prev.onOpenSearch === next.onOpenSearch
   && prev.onRefreshBilling === next.onRefreshBilling
+  && prev.onReorderWorkspaces === next.onReorderWorkspaces
   && sidebarTasksEqual(prev.tasks, next.tasks)
 ))

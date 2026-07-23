@@ -498,10 +498,29 @@ export function loadWorkspaces(): string[] {
   }
 }
 
+/** Normalize, dedupe, cap at 8 (keep last 8 when overflowing), and persist. */
+export function saveWorkspaces(order: string[]): string[] {
+  const seen = new Set<string>()
+  const next: string[] = []
+  for (const item of order) {
+    if (typeof item !== 'string') continue
+    const path = item.trim()
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    next.push(path)
+  }
+  const capped = next.length > 8 ? next.slice(-8) : next
+  localStorage.setItem(WORKSPACES_KEY, JSON.stringify(capped))
+  return capped
+}
+
 export function rememberWorkspace(path: string, existing = loadWorkspaces()) {
-  const next = [path, ...existing.filter((item) => item !== path)].slice(0, 8)
-  localStorage.setItem(WORKSPACES_KEY, JSON.stringify(next))
-  return next
+  // Do not reorder on click: existing workspaces stay in place.
+  // New paths append at the end; when full, drop the oldest to keep max 8.
+  if (existing.includes(path)) {
+    return existing
+  }
+  return saveWorkspaces([...existing, path])
 }
 
 export function titleFromPrompt(prompt: string) {

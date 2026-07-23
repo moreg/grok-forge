@@ -714,6 +714,13 @@ body.resizing-panels * { cursor: col-resize !important; }
 button.workspace-card:hover {
   background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
 }
+.workspace-card.is-dragging {
+  opacity: 0.45;
+}
+.workspace-card.is-drag-over {
+  border-color: color-mix(in srgb, var(--accent, #8b7dff) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b7dff) 12%, transparent);
+}
 .workspace-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 6px; color: var(--workspace-icon-text); background: var(--workspace-icon-bg); }
 .workspace-card strong, .workspace-card small { display: block; max-width: 146px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-card strong { font-size: 11px; font-weight: 600; }.workspace-card small { margin-top: 3px; color: var(--workspace-sub); font-size: 11px; }
@@ -2127,7 +2134,26 @@ html[data-theme="dark"] :focus-visible {
   content-visibility: auto;
   contain-intrinsic-size: auto 140px;
 }
-.user-message { width: fit-content; max-width: 83%; margin: 0 0 26px auto; padding: 11px 13px; border: 1px solid var(--bubble-user-border); border-radius: 11px 11px 3px 11px; color: var(--bubble-user-text); background: var(--bubble-user-bg); font-size: 11px; line-height: 1.6; }
+.user-message {
+  width: fit-content;
+  max-width: 83%;
+  margin: 0 0 26px auto;
+  border: 1px solid var(--bubble-user-border);
+  border-radius: 11px 11px 3px 11px;
+  background: var(--bubble-user-bg);
+}
+
+.message-content {
+  padding: 11px 13px;
+  color: var(--bubble-user-text);
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 11px 11px 3px 11px;
+}
+.user-message .message-copy-bar {
+  padding: 0 13px 8px;
+  margin-top: 0;
+}
 .user-message .message-attachments { margin-top: 0; }
 .user-message .md-user + .message-attachments { margin-top: 8px; }
 .agent-block { display: grid; grid-template-columns: 27px 1fr; gap: 11px; }

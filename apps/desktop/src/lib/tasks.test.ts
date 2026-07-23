@@ -55,6 +55,7 @@ import {
   loadTaskSnapshot,
   loadTheme,
   loadWorkspaces,
+  saveWorkspaces,
   modelLabel,
   saveAutoReconnect,
   saveFontScale,
@@ -334,7 +335,18 @@ describe('task helpers', () => {
     expect(statusLabel('idle')).toBe('就绪')
     expect(loadWorkspaces()).toEqual([])
     expect(rememberWorkspace('D:\\a')).toEqual(['D:\\a'])
-    expect(rememberWorkspace('D:\\b', ['D:\\a'])).toEqual(['D:\\b', 'D:\\a'])
+    expect(rememberWorkspace('D:\\b', ['D:\\a'])).toEqual(['D:\\a', 'D:\\b'])
+    // Clicking an existing path does not reorder.
+    expect(rememberWorkspace('D:\\a', ['D:\\a', 'D:\\b'])).toEqual(['D:\\a', 'D:\\b'])
+    // When full (8), drop oldest and keep the new path at the end.
+    const full = ['1', '2', '3', '4', '5', '6', '7', '8']
+    expect(rememberWorkspace('9', full)).toEqual(['2', '3', '4', '5', '6', '7', '8', '9'])
+    // saveWorkspaces: dedupe, trim empties, cap at 8, preserve reorder.
+    expect(saveWorkspaces(['  a  ', 'b', 'a', '', 'c'])).toEqual(['a', 'b', 'c'])
+    expect(saveWorkspaces(['1', '2', '3', '4', '5', '6', '7', '8', '9'])).toEqual([
+      '2', '3', '4', '5', '6', '7', '8', '9',
+    ])
+    expect(loadWorkspaces()).toEqual(['2', '3', '4', '5', '6', '7', '8', '9'])
   })
 
   it('archives assistant replies and builds help text', () => {

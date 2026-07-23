@@ -351,6 +351,12 @@ export async function showDesktopNotification(
   }
 }
 
+/** Critical user-facing errors: prefer desktop notification, fall back to alert. */
+export async function notifyUserError(title: string, body: string): Promise<void> {
+  const ok = await showDesktopNotification(title, body, true)
+  if (!ok) window.alert(`${title}\n${body}`)
+}
+
 export type ExportHistoryKind =
   | 'patch'
   | 'patch-all'
